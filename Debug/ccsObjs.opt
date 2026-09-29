@@ -1,0 +1,17 @@
+"./gpio_toggle_output.o"
+"./ti_msp_dl_config.o"
+"./startup_mspm0g350x_ticlang.o"
+"./hardware/IMU660RB/Fusion/FusionAhrs.o"
+"./hardware/IMU660RB/Fusion/FusionCompass.o"
+"./hardware/IMU660RB/Fusion/FusionOffset.o"
+"./hardware/IMU660RB/imu660rb.o"
+"./hardware/IMU660RB/lsm6dsr_reg.o"
+"./hardware/clock.o"
+"./hardware/clock_selftest.o"
+"./hardware/fluid.o"
+"./hardware/fluid_demo.o"
+"./hardware/oled_hardware_i2c.o"
+"./hardware/oled_selftest.o"
+-l"./device_linker.cmd"
+-ldevice.cmd.genlibs
+-llibc.a

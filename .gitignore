@@ -1,0 +1,32 @@
+# ============================================================
+#  MSPM0G3507 流体模拟工程 —— 忽略规则
+#
+#  原则：只忽略“能重新生成”和“本机特有”的东西。
+#  Debug/ 下的构建脚本（makefile、subdir_vars.mk、device.opt、
+#  device_linker.cmd、ti_msp_dl_config.c/.h 等）必须保留，
+#  否则别人 clone 下来无法直接 gmake 构建。
+# ============================================================
+
+# ---------- 编译产物（可重新生成）----------
+Debug/**/*.o
+Debug/**/*.d
+Debug/**/*.d_raw
+Debug/*.map
+Debug/*.out
+Debug/*.lst
+
+# ---------- SysConfig / 链接器中间输出 ----------
+Debug/Event.dot
+Debug/*_linkInfo.xml
+
+# ---------- IDE / 语言服务器缓存 ----------
+# 旧仓库里 580 个跟踪文件中有 371 个是这个 clangd 索引缓存
+Debug/.clangd/
+Debug/.cache/
+.settings/
+
+# ---------- 编辑器 / 系统垃圾 ----------
+Thumbs.db
+Desktop.ini
+*.swp
+*~

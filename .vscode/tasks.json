@@ -1,0 +1,22 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "编译 MSPM0 工程",
+            "type": "process",
+            "command": "C:\\ti\\ccs2041\\ccs\\utils\\bin\\gmake.exe",
+            "args": [
+                "-C",
+                "${workspaceFolder}\\Debug",
+                "-j",
+                "16",
+                "all"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
