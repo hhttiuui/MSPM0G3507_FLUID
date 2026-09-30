@@ -126,6 +126,7 @@ SYSCONFIG_WEAK void SYSCFG_DL_initPower(void)
     DL_UART_Main_reset(UART_1_INST);
     DL_SPI_reset(SPI_IMU660RB_INST);
 
+    DL_MathACL_reset(MATHACL);
 
     DL_GPIO_enablePower(GPIOA);
     DL_GPIO_enablePower(GPIOB);
@@ -140,6 +141,7 @@ SYSCONFIG_WEAK void SYSCFG_DL_initPower(void)
     DL_UART_Main_enablePower(UART_1_INST);
     DL_SPI_enablePower(SPI_IMU660RB_INST);
 
+    DL_MathACL_enablePower(MATHACL);
     delay_cycles(POWER_STARTUP_DELAY);
 }
 

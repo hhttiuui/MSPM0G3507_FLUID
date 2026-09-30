@@ -15,6 +15,10 @@
  *   会调用 __aeabi_lmul 之类的软件例程（约 30~60 周期/次）。
  *   这是当前的主要瓶颈 —— 先用"正确优先"的实现把仿真跑起来，
  *   后面按实测结果再决定是否换 Q15 / MATHACL / 浮点。
+ *
+ * 已做的两轮优化（都有实测数据支撑）：
+ *   ① 乘法内联 + 热点函数搬进 SRAM          50.7ms → 31.6ms
+ *   ② 除法改用 MATHACL 硬件除法器（见 IQ_DIV_MODE） 31.6ms → 预计约 18ms
  */
 #ifndef __FLUID_IQMATH_H
 #define __FLUID_IQMATH_H
@@ -62,14 +66,31 @@ static inline int64_t iq_mul64(int32_t a, int32_t b)
 #define _IQmpy(A, B)  ((_iq)(((int64_t)(A) * (int64_t)(B)) >> IQ_SHIFT))
 #endif
 /* ---- _IQdiv 的实现方式 ----
-   1 = 走单精度浮点（int→float → 除法 → float→int）。
-       M0+ 没有硬件浮点，但软浮点除法（约 300~500 周期）通常仍明显快于
-       64 位整数除法 __aeabi_ldivmod（实测约 1000 周期，是个 32 次迭代的循环）。
+   2 = 用 MSPM0G350x 的 **MATHACL 硬件除法器**（默认）。
+       写 4 个寄存器就出结果（约 10~20 周期），比软浮点除法快几十倍。
+       实测前：物理一步 28.2ms，其中除法占约 38%（≈10.6ms）。
+       代价：㉠ 只能跑在 MSPM0 上（PC 上编译要改成 1 或 0）
+             ㊡ MATHACL **不可重入**（只有一组 CTL/OP1/OP2/RES1），
+                以后如果中断里也要用，必须加互斥
+   1 = 走单精度浮点（int→float → 除法 → float→int）。软浮点除法约 700 周期，
+       仍明显快于 64 位整数除法 __aeabi_ldivmod（约 1000 周期，32 次迭代的循环）。
        精度：float 的 24 位尾数与 Q24 相当，误差 ≤1 LSB，对流体模拟完全够用。
-   0 = 用 64 位整数除法（结果与 WCH 原版逐位一致） */
-#define IQ_FLOAT_DIV   1
+   0 = 用 64 位整数除法（结果与 WCH 原版逐位一致，最慢但最准） */
+#define IQ_DIV_MODE   2
 
-#if IQ_FLOAT_DIV
+#if (IQ_DIV_MODE == 2)
+/* 只需要芯片寄存器定义；改成 1 或 0 即可脱离 MSPM0 编译（fluid.c 本身依旧可移植） */
+#include <ti/devices/msp/msp.h>
+
+static inline _iq _IQdiv(_iq A, _iq B)
+{
+    /* 操作码 4 = DIV；bit8 起是 Q 格式；bit5 = 立即触发 */
+    MATHACL->CTL = 4u | ((uint32_t)IQ_SHIFT << 8) | (1u << 5);
+    MATHACL->OP2 = (uint32_t)B;   /* 除数 */
+    MATHACL->OP1 = (uint32_t)A;   /* 被除数；写 OP1 就是发令 */
+    return (_iq)MATHACL->RES1;    /* 读 RES1 时硬件会 hold 总线直到算完 */
+}
+#elif (IQ_DIV_MODE == 1)
 #define _IQdiv(A, B)  ((_iq)((float)(A) / (float)(B) * 16777216.0f))
 #else
 /* 先转无符号再左移，避免负数左移的未定义行为；/ 之后再转回有符号 */

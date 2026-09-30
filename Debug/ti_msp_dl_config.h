@@ -348,6 +348,8 @@ bool SYSCFG_DL_SYSCTL_SYSPLL_init(void);
 #define USER_SPI_MISO_IOMUX                                      (IOMUX_PINCM26)
 
 
+
+
 /* clang-format on */
 
 void SYSCFG_DL_init(void);
@@ -368,6 +370,7 @@ void SYSCFG_DL_UART_0_init(void);
 void SYSCFG_DL_UART_1_init(void);
 void SYSCFG_DL_SPI_IMU660RB_init(void);
 void SYSCFG_DL_DMA_init(void);
+
 
 
 bool SYSCFG_DL_saveConfiguration(void);

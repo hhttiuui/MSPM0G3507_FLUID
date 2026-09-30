@@ -167,7 +167,13 @@ static uint32_t FluidDemo_Push(void)
 static _iq FluidDemo_AccelToSim(uint8_t axis, int sign)
 {
     float v = (float)s_accRaw[axis];
-    v = (v / ACC_MG_PER_G) * ACC_G_TO_SIM * 16777216.0f;
+
+    /* 这里必须写"乘倒数"而不是"除以 1000"：
+       clang 在没有 -ffast-math 时不会把浮点常量除法折成乘法，会保留成一次真正的
+       __aeabi_fdiv（约 700 周期，还会把 divsf3 拖进镜像）。写成 (1.0f / 常量)
+       让编译器在编译期就折成一个常量。 */
+    v = (v * (1.0f / ACC_MG_PER_G)) * ACC_G_TO_SIM * 16777216.0f;
+
     return (sign > 0) ? (_iq)v : (_iq)(-v);
 }
 
