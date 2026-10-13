@@ -1,10 +1,11 @@
 /*
- * fluid_demo.h —— 流体模拟 + OLED 显示
+ * fluid_demo.h —— 流体模拟 → LED 点阵（暂不接 IMU）
  *
  * 实现是 hardware/fluid_demo.c（胶水层）：
- *   ① IMU 加速度计 → 屏幕坐标，驱动 fluid.c 的算法
- *   ② cellType[] → 8 页显存缓冲 → OLED_PushPageRange() 批量推屏
- *   ③ 右侧 HUD：三轴读数 / 送入流体的值 / 帧耗时 / 帧率
+ *   ① 假重力（方向每 2s 换一次）驱动 fluid.c 的算法
+ *   ② cellType[] → LedMatrix（映射层）→ 推屏
+ *   ③ 观测量全在 dbg.fluid（没有屏，参数只能这么看）
+ * 算法本身在 hardware/fluid.c，纯计算、零外设依赖。
  */
 #ifndef __FLUID_DEMO_H
 #define __FLUID_DEMO_H

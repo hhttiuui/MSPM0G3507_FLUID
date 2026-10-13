@@ -18,12 +18,18 @@ ORDERED_OBJS += \
 "./hardware/IMU660RB/Fusion/FusionOffset.o" \
 "./hardware/IMU660RB/imu660rb.o" \
 "./hardware/IMU660RB/lsm6dsr_reg.o" \
+"./hardware/battery.o" \
 "./hardware/clock.o" \
-"./hardware/clock_selftest.o" \
+"./hardware/debug.o" \
 "./hardware/fluid.o" \
 "./hardware/fluid_demo.o" \
-"./hardware/oled_hardware_i2c.o" \
-"./hardware/oled_selftest.o" \
+"./hardware/ht16d33a.o" \
+"./hardware/imu_selftest.o" \
+"./hardware/key.o" \
+"./hardware/led_matrix.o" \
+"./hardware/led_show.o" \
+"./hardware/lsm6ds3trc.o" \
+"./hardware/power.o" \
 $(GEN_CMDS__FLAG) \
 -Wl,-ldevice.cmd.genlibs \
 -Wl,-llibc.a \
@@ -133,28 +139,28 @@ endif
 
 # Add inputs and outputs from these tool invocations to the build variables 
 EXE_OUTPUTS += \
-gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang.out 
+G3507_fluid_simulation.out 
 
 EXE_OUTPUTS__QUOTED += \
-"gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang.out" 
+"G3507_fluid_simulation.out" 
 
 
 # All Target
 all: $(OBJS) $(GEN_CMDS)
-	@$(MAKE) --no-print-directory -Onone "gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang.out"
+	@$(MAKE) --no-print-directory -Onone "G3507_fluid_simulation.out"
 
 # Tool invocations
-gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang.out: $(OBJS) $(GEN_CMDS)
+G3507_fluid_simulation.out: $(OBJS) $(GEN_CMDS)
 	@echo 'Arm Linker - building target: "$@"'
-	"C:/ti/ccs2050/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS/bin/tiarmclang.exe" @"device.opt"  -march=thumbv6m -mcpu=cortex-m0plus -mfloat-abi=soft -mlittle-endian -mthumb -O2 -gdwarf-3 -Wall -Wl,-m"gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang.map" -Wl,-i"C:/ti/mspm0_sdk_2_10_00_04/source" -Wl,-i"C:/Users/26447/workspace_ccstheia/gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang" -Wl,-i"C:/Users/26447/workspace_ccstheia/gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang/Debug/syscfg" -Wl,-i"C:/ti/ccs2050/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS/lib" -Wl,--diag_wrap=off -Wl,--display_error_number -Wl,--warn_sections -Wl,--xml_link_info="gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang_linkInfo.xml" -Wl,--rom_model -o "gpio_toggle_output_LP_MSPM0G3507_nortos_ticlang.out" $(ORDERED_OBJS)
+	"C:/ti/ccs2050/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS/bin/tiarmclang.exe" @"device.opt"  -march=thumbv6m -mcpu=cortex-m0plus -mfloat-abi=soft -mlittle-endian -mthumb -O2 -gdwarf-3 -Wall -Wl,-m"G3507_fluid_simulation.map" -Wl,-i"C:/ti/mspm0_sdk_2_10_00_04/source" -Wl,-i"C:/Users/26447/workspace_ccstheia/G3507_fluid_simulation" -Wl,-i"C:/Users/26447/workspace_ccstheia/G3507_fluid_simulation/Debug/syscfg" -Wl,-i"C:/ti/ccs2050/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS/lib" -Wl,--diag_wrap=off -Wl,--display_error_number -Wl,--warn_sections -Wl,--xml_link_info="G3507_fluid_simulation_linkInfo.xml" -Wl,--rom_model -o "G3507_fluid_simulation.out" $(ORDERED_OBJS)
 	@echo 'Finished building target: "$@"'
 	@echo ' '
 
 # Other Targets
 clean:
 	-$(RM) $(GEN_MISC_FILES__QUOTED)$(GEN_FILES__QUOTED)$(EXE_OUTPUTS__QUOTED)
-	-$(RM) "gpio_toggle_output.o" "ti_msp_dl_config.o" "startup_mspm0g350x_ticlang.o" "hardware\IMU660RB\Fusion\FusionAhrs.o" "hardware\IMU660RB\Fusion\FusionCompass.o" "hardware\IMU660RB\Fusion\FusionOffset.o" "hardware\IMU660RB\imu660rb.o" "hardware\IMU660RB\lsm6dsr_reg.o" "hardware\clock.o" "hardware\clock_selftest.o" "hardware\fluid.o" "hardware\fluid_demo.o" "hardware\oled_hardware_i2c.o" "hardware\oled_selftest.o" 
-	-$(RM) "gpio_toggle_output.d" "ti_msp_dl_config.d" "startup_mspm0g350x_ticlang.d" "hardware\IMU660RB\Fusion\FusionAhrs.d" "hardware\IMU660RB\Fusion\FusionCompass.d" "hardware\IMU660RB\Fusion\FusionOffset.d" "hardware\IMU660RB\imu660rb.d" "hardware\IMU660RB\lsm6dsr_reg.d" "hardware\clock.d" "hardware\clock_selftest.d" "hardware\fluid.d" "hardware\fluid_demo.d" "hardware\oled_hardware_i2c.d" "hardware\oled_selftest.d" 
+	-$(RM) "gpio_toggle_output.o" "ti_msp_dl_config.o" "startup_mspm0g350x_ticlang.o" "hardware\IMU660RB\Fusion\FusionAhrs.o" "hardware\IMU660RB\Fusion\FusionCompass.o" "hardware\IMU660RB\Fusion\FusionOffset.o" "hardware\IMU660RB\imu660rb.o" "hardware\IMU660RB\lsm6dsr_reg.o" "hardware\battery.o" "hardware\clock.o" "hardware\debug.o" "hardware\fluid.o" "hardware\fluid_demo.o" "hardware\ht16d33a.o" "hardware\imu_selftest.o" "hardware\key.o" "hardware\led_matrix.o" "hardware\led_show.o" "hardware\lsm6ds3trc.o" "hardware\power.o" 
+	-$(RM) "gpio_toggle_output.d" "ti_msp_dl_config.d" "startup_mspm0g350x_ticlang.d" "hardware\IMU660RB\Fusion\FusionAhrs.d" "hardware\IMU660RB\Fusion\FusionCompass.d" "hardware\IMU660RB\Fusion\FusionOffset.d" "hardware\IMU660RB\imu660rb.d" "hardware\IMU660RB\lsm6dsr_reg.d" "hardware\battery.d" "hardware\clock.d" "hardware\debug.d" "hardware\fluid.d" "hardware\fluid_demo.d" "hardware\ht16d33a.d" "hardware\imu_selftest.d" "hardware\key.d" "hardware\led_matrix.d" "hardware\led_show.d" "hardware\lsm6ds3trc.d" "hardware\power.d" 
 	-@echo ' '
 
 .PHONY: all clean dependents
