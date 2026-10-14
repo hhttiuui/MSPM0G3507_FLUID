@@ -2,14 +2,14 @@
  * SysConfig Configuration Steps:
  *   SPI:
  *     1. Add a SPI module.
- *     2. Name it as "SPI_IMU660RB".
+ *     2. Name it as "SPI_LSM6DS3TRC".
  *     3. Set "Frame Format" to "Motorola 3-wire".
  *     4. Set the pins according to your needs.
  *   GPIO:
  *     1. Add a GPIO module.
- *     2. Name the group as "GPIO_IMU660RB".
- *     3. Name the pins as "PIN_IMU660RB_CS" and "PIN_IMU660RB_INT1".
- *     PIN_IMU660RB_INT1:
+ *     2. Name the group as "GPIO_LSM6DS3TRC".
+ *     3. Name the pins as "PIN_LSM6DS3TRC_CS" and "PIN_LSM6DS3TRC_INT1".
+ *     PIN_LSM6DS3TRC_INT1:
  *       4. Set Direction to "Input".
  *       6. Check the box "Enable Interrupts".
  *       7. Set "Interrupt Priority" to "Level 3 - Lowest".
@@ -23,12 +23,12 @@
 #include "ti_msp_dl_config.h"
 #include "Fusion/Fusion.h"
 
-#ifndef GPIO_IMU660RB_PIN_IMU660RB_CS_PORT
-#define GPIO_IMU660RB_PIN_IMU660RB_CS_PORT GPIO_IMU660RB_PORT 
+#ifndef GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PORT
+#define GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PORT GPIO_LSM6DS3TRC_PORT 
 #endif
 
-#ifndef GPIO_IMU660RB_PIN_IMU660RB_INT1_PORT
-#define GPIO_IMU660RB_PIN_IMU660RB_INT1_PORT GPIO_IMU660RB_PORT 
+#ifndef GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_INT1_PORT
+#define GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_INT1_PORT GPIO_LSM6DS3TRC_PORT 
 #endif
 
 extern float acceleration_mg[3];

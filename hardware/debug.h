@@ -169,8 +169,48 @@ typedef struct {
     uint32_t sim_ms_x10;  /* 上一窗口的单步物理耗时 ×10（单位 0.1ms） */
     uint32_t fps;         /* 上一窗口的帧率 */
     uint32_t frames;      /* 累计物理步数 */
-    uint8_t  tilt;        /* 假重力方向：0 下 / 1 左 / 2 上 / 3 右（还没接 IMU）*/
+    uint8_t  tilt;        /* 假重力方向：0 下 / 1 左 / 2 上 / 3 右。
+                           * ⚠ 只在"假重力"模式下才更新；用真实 IMU 时它停在初值 0 */
     uint8_t  iq_ok;       /* 数学层自检：1 = 通过；0 = 整屏点亮并停在那儿 */
+    uint8_t  imu_ok;      /* LSM6DS3TR-C 初始化返回码：0 = OK（见 lsm6ds3trc.h 的 _OK/_ERR_ID/_ERR_READBACK）*/
+    uint8_t  imu_use;     /* 1 = 当前用真实 IMU 驱动重力；0 = 退回假重力（编译期关掉或 IMU 初始化失败）*/
+
+    /* ---- 渲染观测（参数见 fluid_demo.c 的 FLUID_DENS_FULL_PCT / FLUID_LEVEL_*）----
+     * 现在默认是**灰度渲染**：level = density / DENS_FULL × 255。
+     *   dens_max       ：窗口内最大密度 ×1000（液体内核，通常几千；1 粒子满权重 = 1000）
+     *   dens_lit       ：亮度 ≥ FLUID_LEVEL_VISIBLE_MIN 的格子数（肉眼算"亮"的）
+     *   dens_lit_core  ：亮度过半的格子数 ≈ 液体内核，可以和二进制模式的
+     *                    "亮了多少格"直接对比
+     *   dens_full_x1000：当前满亮度密度 ×1000（= 静止密度 × PCT%）。
+     *                    "液体看起来太瘦" → 调小 FLUID_DENS_FULL_PCT（更亮更满）
+     *                    "内核一片白没层次" → 调大 PCT
+     *   rest_dens      ：静止密度（Q24 原始整数），上面那个满量程就是由它推出来的。
+     *                    **必须是正数**；负数说明 density_update() 的累加又溢出了。
+     *                    （2026-10 已把该累加器从 int32 改成 int64，N 再大也不会翻负）*/
+    uint32_t dens_max;
+    uint32_t dens_lit;
+    uint32_t dens_lit_core;
+    uint32_t dens_full_x1000;
+    int32_t  rest_dens;
+
+    /* ---- 硬件开方（MATHACL SQRT）自检结果（见 fluid_iqmath.h）----
+     * iq_sqrt_ok: 1 = 硬件开方自检通过，_IQsqrt 走硬件（快）
+     *             0 = 自检没通过，已自动退回软件开方（仿真照跑，只是慢）
+     *             0xFF = IQ_SQRT_MODE = 0，本来就是软件实现
+     * iq_sqrt_sf / iq_sqrt_it：自检点（_IQ(4.0)）用到的 sfactor 与 NUMITER，
+     * 只是留档，便于以后对照手册核对。 */
+    uint8_t  iq_sqrt_ok;
+    uint8_t  iq_sqrt_sf;        /* 自检点的 sfactor（0~63）*/
+    uint8_t  iq_sqrt_it;        /* NUMITER，固定 31 */
+    int32_t  iq_sqrt_err;       /* sqrt(_IQ(4.0)) 实测误差（Q24 LSB），期望 ≈ -1024
+                                   有值且量级这么小 ⇒ 硬件开方确实在跑、精度够用 */
+
+    /* ---- 硬件乘法（MATHACL MPY32）自检结果 ----
+     * iq_mpy_ok: 1 = 硬件乘法可用；0 = 自检不过已退回软件；0xFF = 编译期就是软件
+     * iq_mpy_err: 硬件 vs 精确 64 位软件参考的最大绝对误差（Q24 LSB）。
+     *             正确时应为 0~1（截断 vs 四舍五入的差），若上千说明硬件算错了。 */
+    uint8_t  iq_mpy_ok;
+    int32_t  iq_mpy_err;
 } dbg_fluid_t;
 
 /* ---- 一键开关机（实现见 hardware/power.c）----

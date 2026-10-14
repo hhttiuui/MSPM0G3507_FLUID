@@ -124,7 +124,7 @@ int main(void)
      *   ③ Key_Init() 要排在打开 TIMA0 中断**之前** —— 否则第一拍 Key_Task()
      *      可能拿着还没初始化的按键状态跑。
      */
-    SYSCFG_DL_init();           /* 外设初始化（UART_0 / TIMER_0 / I2C_OLED / SPI_IMU660RB /
+    SYSCFG_DL_init();           /* 外设初始化（UART_0 / TIMER_0 / I2C_OLED / SPI_LSM6DS3TRC /
                                    SPI_LED_DRV / BAT_ADC）+ 电源自锁 PA22 */
     Battery_Init();             /* 使能 BAT_ADC(ADC0) 中断，供 Battery_ReadMilliVolt() 按需采样 */
     SysTick_Init();             /* tick_ms 1ms 节拍，各模块的计时基准 */

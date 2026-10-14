@@ -3,7 +3,7 @@
  *
  * ==================== 器件与接线 ====================
  * LSM6DS3TR-C：ST 六轴 IMU（3 轴加速度 + 3 轴陀螺）。SPI/I2C 双接口，
- * 本工程用系统里已经配好的硬件 SPI1（syscfg 里叫 SPI_IMU660RB）：
+ * 本工程用系统里已经配好的硬件 SPI1（syscfg 里叫 SPI_LSM6DS3TRC）：
  *   SCLK = PA17   PICO/MOSI = PA18   POCI/MISO = PA16   CS = PA15（GPIO 手动控制）
  *   Mode0(POL0/PHA0)、8bit、MSB first、8MHz（= 80MHz / ((1+4)*2)）
  *
@@ -70,10 +70,18 @@
 
 /* 灵敏度（datasheet 第 2 章）。整数化后：
  *   ±2g   → 0.061 mg/LSB  ⇒ 用 61 µg/LSB 参与整数运算
- *   ±2000dps → 70 mdps/LSB（正好是整数，不用取整） */
+ *   ±2000dps → 70 mdps/LSB（正好是整数，不用取整）
+ *
+ * 温度（datasheet Table 5 "Temperature sensor characteristics"，DocID030071 Rev 3）：
+ *   TSen = 256 LSB/°C  ⇒ 1 LSB = 1000/256 = 3.90625 m°C
+ *   Toff：0 LSB (typ.) 对应 25 °C
+ * ⚠ 早先这里误写成 62.5 m°C/LSB（即 16 LSB/°C），比实际灵敏 16 倍，
+ *   导致室温被算成 167 °C。用分数形式换算可避免取整误差。 */
 #define LSM6DS3TRC_ACCEL_UG_PER_LSB     (61)      /* µg/LSB，对应 FS_XL = ±2g   */
 #define LSM6DS3TRC_GYRO_MDPS_PER_LSB    (70)      /* mdps/LSB，对应 FS_G = ±2000 */
-#define LSM6DS3TRC_TEMP_MDEG_PER_LSB    (125)     /* 62.5 m°C/LSB = 125/2，见换算处 */
+#define LSM6DS3TRC_TEMP_MDEG_NUM        (1000)    /* 温度换算分子：m°C = raw × 1000 / 256 */
+#define LSM6DS3TRC_TEMP_MDEG_DEN        (256)     /* 温度换算分母（256 LSB/°C） */
+#define LSM6DS3TRC_TEMP_OFFSET_MDEGC    (25000)   /* 0 LSB 对应 25 °C = 25000 m°C */
 
 /* ==================== 接口 ==================== */
 

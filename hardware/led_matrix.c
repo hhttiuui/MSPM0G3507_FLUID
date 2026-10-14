@@ -43,15 +43,16 @@
 #include "ht16d33a.h"
 #include "led_matrix.h"
 
-/* 一帧显示数据（二进制模式 32 字节 = 256 个 LED，1 bit/LED）*/
+/* 一帧显示数据。大小随显示模式变（见 ht16d33a.h 的 HT16D33A_USE_BINARY_MODE）：
+ *   二进制 32 字节（1 bit/点，只有亮灭） / 灰度 256 字节（1 字节/点，0~255 亮度）*/
 static uint8_t s_frame[HT16D33A_RAM_BYTES];
 
-/* 面板 (列 col, 行 row) → (RAM 地址 addr, 数据位 bit)。见文件顶部推导。 */
-static void LedMatrix_Map(uint8_t col, uint8_t row, uint8_t *addr, uint8_t *bit)
+/* 面板 (列 col, 行 row) → 芯片 (扫描通道 n, 数据通道 m)。见文件顶部推导。
+ * ⚠ 这一步与显示模式**无关**：两种模式下 (n,m) ↔ 物理灯的对应关系是同一套，
+ *   灰度模式只是把 (n,m) 打包进 RAM 的方式变了（见 LedMatrix_RamAddr）。 */
+static void LedMatrix_MapNM(uint8_t col, uint8_t row, uint8_t *n, uint8_t *m)
 {
     uint8_t a;      /* 本格的阳极引脚在 S1..S17 里的序号 */
-    uint8_t n;      /* 芯片扫描通道 1..16 */
-    uint8_t m;      /* 芯片数据通道 1..16 */
 
     if (col <= (uint8_t) (LED_PANEL_COLS - row)) {
         a = (uint8_t) (LED_PANEL_COLS + 1u - row);      /* 主阳极 S(17-r) */
@@ -59,12 +60,20 @@ static void LedMatrix_Map(uint8_t col, uint8_t row, uint8_t *addr, uint8_t *bit)
         a = (uint8_t) (LED_PANEL_COLS - row);           /* 阶梯切点之后的 S(16-r) */
     }
 
-    n = a;                                              /* 通道 n ↔ 阳极 S(n) */
+    *n = a;                                             /* 通道 n ↔ 阳极 S(n) */
+    *m = (uint8_t) (col - ((col > a) ? 1u : 0u));
+}
 
-    m = (uint8_t) (col - ((col > a) ? 1u : 0u));
-
-    *addr = (uint8_t) (2u * (n - 1u) + (m - 1u) / 8u);
-    *bit  = (uint8_t) ((m - 1u) % 8u);
+/* (n,m) → 显示 RAM 地址。两种模式的打包方式不同（手册 p19~23 / p24~26）：
+ *   二进制：每个扫描通道 2 字节，8 个数据通道挤进 1 字节
+ *   灰度  ：每个扫描通道 16 字节，一个数据通道独占 1 字节（该字节 = 亮度） */
+static uint16_t LedMatrix_RamAddr(uint8_t n, uint8_t m)
+{
+#if HT16D33A_USE_BINARY_MODE
+    return (uint16_t) (2u * ((uint16_t) n - 1u) + ((uint16_t) m - 1u) / 8u);
+#else
+    return (uint16_t) (16u * ((uint16_t) n - 1u) + ((uint16_t) m - 1u));
+#endif
 }
 
 void LedMatrix_Clear(void)
@@ -76,67 +85,119 @@ void LedMatrix_Clear(void)
     }
 }
 
-void LedMatrix_SetPanel(uint8_t col, uint8_t row)
+void LedMatrix_SetPanelLevel(uint8_t col, uint8_t row, uint8_t level)
 {
-    uint8_t addr, bit;
+    uint8_t  n, m;
+    uint16_t addr;
 
     /* 越界 = 面板上本来就没这颗，直接丢掉，让上层不用做边界判断 */
     if ((col == 0u) || (col > LED_PANEL_COLS) || (row == 0u) || (row > LED_PANEL_ROWS)) {
         return;
     }
 
-    LedMatrix_Map(col, row, &addr, &bit);
+    LedMatrix_MapNM(col, row, &n, &m);
 
-    if ((uint16_t) addr < (uint16_t) HT16D33A_RAM_BYTES) {
-        s_frame[addr] |= (uint8_t) (1u << bit);
+    addr = LedMatrix_RamAddr(n, m);
+    if (addr >= (uint16_t) HT16D33A_RAM_BYTES) {
+        return;
     }
+
+#if HT16D33A_USE_BINARY_MODE
+    if (level != 0u) {
+        s_frame[addr] |= (uint8_t) (1u << ((m - 1u) % 8u));
+    }
+#else
+    s_frame[addr] = level;              /* 灰度：整字节就是这一点的亮度 */
+#endif
 }
 
-void LedMatrix_SetRaw(uint8_t addr, uint8_t bit)
+void LedMatrix_SetPanel(uint8_t col, uint8_t row)
 {
-    if (((uint16_t) addr < (uint16_t) HT16D33A_RAM_BYTES) && (bit < 8u)) {
-        s_frame[addr] |= (uint8_t) (1u << bit);
+    LedMatrix_SetPanelLevel(col, row, LED_MATRIX_MAX_LEVEL);
+}
+
+void LedMatrix_SetRawLevel(uint8_t addr, uint8_t level)
+{
+    if ((uint16_t) addr >= (uint16_t) HT16D33A_RAM_BYTES) {
+        return;
     }
+
+#if HT16D33A_USE_BINARY_MODE
+    /* 二进制下一个字节管 8 个点，没有"中间亮度"：非 0 就按整字节点亮 */
+    s_frame[addr] = (level != 0u) ? 0xFFu : 0x00u;
+#else
+    s_frame[addr] = level;
+#endif
 }
 
 void LedMatrix_FillAll(uint8_t on)
 {
-    uint8_t c, r;
-
     if (on == 0u) {
         LedMatrix_Clear();
         return;
     }
 
-    /* 逐个真实格子点亮（240 次 ≈ 几十 µs），比"32 字节填 0xFF"多几行，
-     * 但不会去依赖"CA19 那些位没有 LED"这个前提。 */
-    for (r = 1u; r <= LED_PANEL_ROWS; r++) {
-        for (c = 1u; c <= LED_PANEL_COLS; c++) {
-            LedMatrix_SetPanel(c, r);
+#if HT16D33A_USE_BINARY_MODE
+    {
+        uint8_t c, r;
+
+        /* 逐个真实格子点亮（240 次 ≈ 几十 µs），比"32 字节填 0xFF"多几行，
+         * 但不会去依赖"CA19 那些位没有 LED"这个前提。 */
+        for (r = 1u; r <= LED_PANEL_ROWS; r++) {
+            for (c = 1u; c <= LED_PANEL_COLS; c++) {
+                LedMatrix_SetPanel(c, r);
+            }
         }
     }
+#else
+    {
+        uint16_t i;
+
+        /* 灰度：整屏拉到最亮。面板只有 240 颗真灯，而 RAM 有 256 个槽，
+         * 多写的 16 槽对应 CA19（本板没接 LED），写了也不会亮，无害。 */
+        for (i = 0u; i < (uint16_t) HT16D33A_RAM_BYTES; i++) {
+            s_frame[i] = LED_MATRIX_MAX_LEVEL;
+        }
+    }
+#endif
+}
+
+/* 应用坐标 (x,y) → 面板坐标 (col,row)：套 LED_ORIENT_* 那两下旋转。
+ * 只在这里做一次，SetCell / SetCellLevel 共用，免得两边推导走偏。 */
+static void LedMatrix_CellToPanel(uint8_t x, uint8_t y, uint8_t *col, uint8_t *row)
+{
+    uint8_t c, r;
+
+#if LED_ORIENT_SWAP_XY
+    c = y;                          /* 面板 16 宽 ↔ 应用 16 高 */
+    r = x;
+#else
+    c = x;
+    r = y;
+#endif
+
+#if LED_ORIENT_FLIP_X
+    c = (uint8_t) (LED_PANEL_COLS + 1u - c);
+#endif
+#if LED_ORIENT_FLIP_Y
+    r = (uint8_t) (LED_PANEL_ROWS + 1u - r);
+#endif
+
+    *col = c;
+    *row = r;
+}
+
+void LedMatrix_SetCellLevel(uint8_t x, uint8_t y, uint8_t level)
+{
+    uint8_t col, row;
+
+    LedMatrix_CellToPanel(x, y, &col, &row);
+    LedMatrix_SetPanelLevel(col, row, level);
 }
 
 void LedMatrix_SetCell(uint8_t x, uint8_t y)
 {
-    uint8_t col, row;
-
-#if LED_ORIENT_SWAP_XY
-    col = y;                        /* 面板 16 宽 ↔ 应用 16 高 */
-    row = x;
-#else
-    col = x;
-    row = y;
-#endif
-
-#if LED_ORIENT_FLIP_X
-    col = (uint8_t) (LED_PANEL_COLS + 1u - col);
-#endif
-#if LED_ORIENT_FLIP_Y
-    row = (uint8_t) (LED_PANEL_ROWS + 1u - row);
-#endif
-
-    LedMatrix_SetPanel(col, row);
+    LedMatrix_SetCellLevel(x, y, LED_MATRIX_MAX_LEVEL);
 }
 
 void LedMatrix_Flush(void)

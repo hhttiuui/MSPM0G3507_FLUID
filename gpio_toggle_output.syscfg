@@ -48,8 +48,8 @@ Board.peripheral.$assign          = "DEBUGSS";
 Board.peripheral.swclkPin.$assign = "PA20";
 Board.peripheral.swdioPin.$assign = "PA19";
 
-GPIO1.$name                         = "GPIO_IMU660RB";
-GPIO1.associatedPins[0].$name       = "PIN_IMU660RB_CS";
+GPIO1.$name                         = "GPIO_LSM6DS3TRC";
+GPIO1.associatedPins[0].$name       = "PIN_LSM6DS3TRC_CS";
 GPIO1.associatedPins[0].pin.$assign = "PA15";
 
 GPIO2.$name                         = "LED";
@@ -96,7 +96,7 @@ I2C1.sclPinConfig.onlyInternalResistor = scripting.forceWrite(false);
 I2C1.sclPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
 I2C1.sclPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric5";
 
-SPI1.$name                              = "SPI_IMU660RB";
+SPI1.$name                              = "SPI_LSM6DS3TRC";
 SPI1.frameFormat                        = "MOTO3";
 SPI1.sclkPinConfig.direction            = scripting.forceWrite("OUTPUT");
 SPI1.sclkPinConfig.onlyInternalResistor = scripting.forceWrite(false);

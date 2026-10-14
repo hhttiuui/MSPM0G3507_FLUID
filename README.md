@@ -240,7 +240,7 @@ HUD 走的是慢速逐字节接口，所以每 20 帧才刷新一次（`HUD_UPDA
 
 `.syscfg` 里的模块：`SYSCTL`、`MATHACL`、`I2C1`（OLED）、`SPI1`（IMU）、
 `SPI0`（LED 驱动）、`UART1`（预留串口）、`ADC0`（电池采样）、
-`TIMA0`（**5 ms 按键节拍**），GPIO 组 5 个：`GPIO_IMU660RB`（IMU 片选）、
+`TIMA0`（**5 ms 按键节拍**），GPIO 组 5 个：`GPIO_LSM6DS3TRC`（IMU 片选）、
 `LED`（指示灯）、`GPIO_LED_DRV`（LED 驱动 CSB）、`GPIO_PWR`（电源自锁 PA22）、
 `GPIO_USERKEY`（USER1/2/3 = PA25/24/23），以及 `Board`（SWD）。
 
@@ -479,7 +479,7 @@ C:\ti\ccs2050\ccs\utils\bin\gmake.exe -C "Debug" -j 16 all
 `.syscfg` 已经切到 **VQFN-48(RGZ)**（头部 `@cliArgs` / `@v2CliArgs`）。
 关键的器件事实：**48 脚的 44 个 GPIO 是 64 脚的完全子集**，所以只要引脚选在
 两边都有的那些上，换封装时**应用代码一行都不用改** —— 代码里全是 SysConfig 的
-逻辑名（`GPIO_I2C_OLED_IOMUX_SCL`、`SPI_IMU660RB_INST`……），端口号和引脚号
+逻辑名（`GPIO_I2C_OLED_IOMUX_SCL`、`SPI_LSM6DS3TRC_INST`……），端口号和引脚号
 由自动生成的 `ti_msp_dl_config.h` 决定。
 
 48 脚上**不存在**的 16 个引脚（永远不要用）：

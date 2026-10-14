@@ -53,15 +53,27 @@ void LedMatrix_Init(void);
 /* 只清本地帧缓冲，不动芯片（要和 LedMatrix_Flush() 配对使用） */
 void LedMatrix_Clear(void);
 
-/* 按**面板物理坐标**点一个点：col 1..16（左→右）、row 1..15（上→下）。
+/* ==================== 亮度（灰度模式）============================
+ * HT16D33A 有两种显示模式，见 ht16d33a.h 的 HT16D33A_USE_BINARY_MODE：
+ *   二进制：1 bit/点  → 本层只有"亮/灭"
+ *   灰度  ：1 字节/点 → 本层多出 0~255 的逐点亮度
+ * 下面带 Level 的三个函数在两种模式下都能用（二进制模式下非 0 的 level = 满亮）。
+ * ⚠ 灰度模式每帧 SPI 是二进制的 8 倍（256 vs 32 字节），代价见 ht16d33a.h。 */
+#define LED_MATRIX_MAX_LEVEL    (0xFFu)
+
+/* 按**面板物理坐标**设一点亮度：col 1..16（左→右）、row 1..15（上→下）。
  * 越界（面板上本来就没这颗）直接丢掉，不报错 —— 这样上层不用做边界判断。 */
+void LedMatrix_SetPanelLevel(uint8_t col, uint8_t row, uint8_t level);
+
+/* 按**应用坐标**设一点亮度：x 1..15、y 1..16，内部按 LED_ORIENT_* 转到面板坐标 */
+void LedMatrix_SetCellLevel(uint8_t x, uint8_t y, uint8_t level);
+
+/* 直写显示 RAM 里的某个字节（诊断用）。灰度模式下就是这一字节的亮度 */
+void LedMatrix_SetRawLevel(uint8_t addr, uint8_t level);
+
+/* 上面两者的"满亮"快捷方式，等价于 level = LED_MATRIX_MAX_LEVEL */
 void LedMatrix_SetPanel(uint8_t col, uint8_t row);
-
-/* 按**应用坐标**点一个点：x 1..15、y 1..16，内部按 LED_ORIENT_* 转到面板坐标 */
 void LedMatrix_SetCell(uint8_t x, uint8_t y);
-
-/* 直写芯片坐标（扫描通道/数据通道算出来的 RAM 地址与位），诊断用 */
-void LedMatrix_SetRaw(uint8_t addr, uint8_t bit);
 
 /* 一键全亮/全灭：on=1 点亮面板上**所有真实存在**的 LED（走映射，不会去碰 CA19
  * 那些没有 LED 的槽）；on=0 等价于 LedMatrix_Clear()。 */

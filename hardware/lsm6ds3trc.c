@@ -4,7 +4,7 @@
  * 分层：本文件只做"寄存器读写 + 原始值换算"，把观测量写进 dbg；
  *       采样节奏、屏刷新、错误提示都在 hardware/imu_selftest.c 里。
  *
- * SPI 事务由 CS/SCLK 上的一问一答完成（SPI_IMU660RB 已在 SYSCFG_DL_init
+ * SPI 事务由 CS/SCLK 上的一问一答完成（SPI_LSM6DS3TRC 已在 SYSCFG_DL_init
  * 里初始化好，这里不再碰 SPI 配置，避免和 syscfg 打架）。
  */
 
@@ -14,8 +14,8 @@
 
 /* 片选：syscfg 里是普通 GPIO（因为 SPI1 用的是 Motorola 3 线格式，
  * 没有硬件 CS 信号），所以要自己拉低/拉高。 */
-#define CS_PORT     GPIO_IMU660RB_PORT
-#define CS_PIN      GPIO_IMU660RB_PIN_IMU660RB_CS_PIN
+#define CS_PORT     GPIO_LSM6DS3TRC_PORT
+#define CS_PIN      GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PIN
 
 /* 超时保护：一次 8bit 移位只要几十个循环，给个宽松上限，
  * 防止 SPI 意外卡住时把整个主循环死等在这里。 */
@@ -32,20 +32,20 @@ static uint8_t SpiTransferByte(uint8_t data)
     uint32_t guard;
     uint8_t  rd;
 
-    DL_SPI_transmitData8(SPI_IMU660RB_INST, data);
+    DL_SPI_transmitData8(SPI_LSM6DS3TRC_INST, data);
 
     guard = SPI_WAIT_LIMIT;
-    while (DL_SPI_isRXFIFOEmpty(SPI_IMU660RB_INST) && (--guard != 0u)) {
+    while (DL_SPI_isRXFIFOEmpty(SPI_LSM6DS3TRC_INST) && (--guard != 0u)) {
         /* Wait for received byte */
     }
     if (guard == 0u) {
         dbg.spi.timeout++;      /* 收到东西之前就超时了：MISO 没被驱动 */
     }
 
-    rd = DL_SPI_receiveData8(SPI_IMU660RB_INST);
+    rd = DL_SPI_receiveData8(SPI_LSM6DS3TRC_INST);
 
     guard = SPI_WAIT_LIMIT;
-    while (DL_SPI_isBusy(SPI_IMU660RB_INST) && (--guard != 0u)) {
+    while (DL_SPI_isBusy(SPI_LSM6DS3TRC_INST) && (--guard != 0u)) {
         /* Wait for SPI transfer completion */
     }
     if (guard == 0u) {
@@ -210,6 +210,10 @@ void LSM6DS3TRC_ReadAll(void)
     dbg.phy.ay_mg = DivRound1000((int32_t) dbg.raw.ay * LSM6DS3TRC_ACCEL_UG_PER_LSB);
     dbg.phy.az_mg = DivRound1000((int32_t) dbg.raw.az * LSM6DS3TRC_ACCEL_UG_PER_LSB);
 
-    /* 温度：62.5 m°C/LSB、0 LSB = 25°C ⇒ m°C = 25000 + raw*62.5 = 25000 + raw*125/2 */
-    dbg.phy.temp_mdegc = 25000 + ((int32_t) RawLe16(&buf[0]) * LSM6DS3TRC_TEMP_MDEG_PER_LSB) / 2;
+    /* 温度（datasheet Table 5）：256 LSB/°C、0 LSB = 25 °C
+     *   m°C = 25000 + raw × 1000 / 256
+     * 先乘后除，保留精度；raw 是 16 位有符号，乘 1000 后约 ±3.3e7，int32 装得下。 */
+    dbg.phy.temp_mdegc = LSM6DS3TRC_TEMP_OFFSET_MDEGC
+                       + ((int32_t) RawLe16(&buf[0]) * LSM6DS3TRC_TEMP_MDEG_NUM)
+                         / LSM6DS3TRC_TEMP_MDEG_DEN;
 }

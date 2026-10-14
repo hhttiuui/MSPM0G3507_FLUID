@@ -33,6 +33,23 @@
 #define YID(n)       (2U * (n) + 1U)
 #define INDEX(x, y)  ((x) * CellNumY + (y))
 
+/* ---- 硬件开方（MATHACL SQRT）的运行时开关 ----
+   在这里定义、在 fluid_iqmath.h 里 extern 声明，保证全工程只有一份。
+   为什么要开关而不是写死：硬件 SQRT 的 sfactor 要按输入现算，
+   万一算错，_IQsqrt 会把整个仿真算飞（现象就是屏幕全亮/乱码）。
+   启动时先自检（IQ_SqrtSelfTest），不对就自动退回软件开方。
+   默认 0 = 先用软件，自检通过后由自检函数置 1 —— 即使自检没被调用，
+   也只会慢一点，绝不会算错。 */
+#if (IQ_MPY_MODE == 2)
+uint8_t g_iqMpyUseHw    = 1u;   /* 1 = 硬件乘法；0 = 自检不过，已退回软件 */
+#endif
+
+#if IQ_SQRT_MODE
+uint8_t g_iqSqrtUseHw   = 0u;   /* 0 = 软件开方；1 = 硬件开方 */
+uint8_t g_iqSqrtSfactor = 31u;  /* 诊断：自检点算出的 sfactor */
+uint8_t g_iqSqrtIter    = 31u;  /* 诊断：NUMITER */
+#endif
+
 static _iq invertSpacing;
 
 static _iq particlePos[NumberOfParticles * 2U];
@@ -45,7 +62,10 @@ static _iq vPrev[CellCount];
 static _iq uWeight[CellCount];
 static _iq vWeight[CellCount];
 static _iq particleDensity[CellCount];
-static _iq solidMask[CellCount];
+/* 固体掩码：**只取 0 或 1**（不是 Q24 的 1.0！）。
+   因为只有这两种值，压力求解里"乘以掩码"可以直接用整数条件判断代替，
+   省掉 4 次 Q24 乘法 —— 见 compute_grid_forces() 里的说明。 */
+static uint8_t solidMask[CellCount];
 static uint8_t cellType[CellCount];
 static _iq particleRestDensity = 0;
 
@@ -96,9 +116,9 @@ static void FLUID_FN setup_solid_mask(void)
 {
     for (unsigned int x = 0; x < CellNumX; x++) {
         for (unsigned int y = 0; y < CellNumY; y++) {
-            _iq s = _IQ(1.0f);
+            uint8_t s = 1u;
             if (x == 0U || x == CellNumX - 1U || y == 0U || y == CellNumY - 1U) {
-                s = _IQ(0.0f);
+                s = 0u;
             }
             solidMask[INDEX(x, y)] = s;
         }
@@ -335,9 +355,21 @@ void FLUID_FN density_update(void)
         particleDensity[INDEX(x0, y1)] += _IQmpy(sx, ty);
     }
 
-    /* 静止密度只在第一帧标定一次 */
+    /* 静止密度只在第一帧标定一次。
+     *
+     * ⚠ 这里的累加**必须用 64 位**：总密度 ≈ N × 2^24，而 INT32_MAX 只够撑到
+     *   N ≈ 128.7。之前用 _iq 累加，N=130 只是**勉强压在悬崖边上**
+     *   （实测 rest_dens = +36559675 = +2.179，还是正的，所以
+     *     compute_grid_forces() 里的刚度项其实是开着的）；
+     *   一加到 N=200 立刻翻成负数 → `if (particleRestDensity > 0)` 恒不成立
+     *   → 刚度项被关掉 → 流体失去抗压能力，被压成一小坨：
+     *        dens_max 2789 → 16697，dens_lit 71 → 40（实测）
+     *
+     *   sum 与 numFluid 都是"粒子数当量"，2^24 直接约掉，所以整数除的结果
+     *   仍是 Q24 密度 —— 与原来的 _IQdiv(sum, _IQI(numFluid)) **完全等价**，
+     *   只是不会溢出（在 N=130 下行为逐位不变，是个干净的对照）。 */
     if (particleRestDensity == _IQ(0.0f)) {
-        _iq sum = _IQ(0.0f);
+        int64_t sum = 0;
         unsigned int numFluid = 0;
 
         for (unsigned int i = 0; i < CellCount; i++) {
@@ -348,7 +380,7 @@ void FLUID_FN density_update(void)
         }
 
         if (numFluid > 0U) {
-            particleRestDensity = _IQdiv(sum, _IQI(numFluid));
+            particleRestDensity = (_iq)(sum / (int64_t)numFluid);
         }
     }
 }
@@ -364,7 +396,7 @@ void FLUID_FN particles_to_grid(void)
 
     /* 先按固体掩码标记类型 */
     for (unsigned int i = 0; i < CellCount; i++) {
-        cellType[i] = (solidMask[i] == _IQ(0.0f)) ? SOLID_CELL : AIR_CELL;
+        cellType[i] = (solidMask[i] == 0u) ? SOLID_CELL : AIR_CELL;
     }
 
     /* 有粒子的格子标成流体 */
@@ -469,20 +501,18 @@ void FLUID_FN compute_grid_forces(unsigned int nIters)
                 unsigned int bottom = INDEX(x, y - 1U);
                 unsigned int top    = INDEX(x, y + 1U);
 
-                _iq sx0 = solidMask[left];
-                _iq sx1 = solidMask[right];
-                _iq sy0 = solidMask[bottom];
-                _iq sy1 = solidMask[top];
+                uint8_t sx0 = solidMask[left];
+                uint8_t sx1 = solidMask[right];
+                uint8_t sy0 = solidMask[bottom];
+                uint8_t sy1 = solidMask[top];
 
                 /*
-                 * 【除法降级】solidMask 非 0 即 1.0(Q24)，也就是 s = k × 2^24 (k∈0..4)，
-                 * 于是 -_IQdiv(div, s) = -((div<<24)/(k<<24)) 恰好等于 -(div / k)：
-                 * 2^24 被约掉了。这里用 **32 位整数除法**代替 64 位软件除法，
+                 * 【除法降级】solidMask 非 0 即 1，于是 -_IQdiv(div, s) = -(div / k)：
+                 * Q24 的 2^24 被约掉了。这里用 **32 位整数除法**代替 64 位软件除法，
                  * 结果完全等价（截断方向也一致），但快很多。
                  * 这是压力求解里最热的一行：每步要执行「迭代次数 × 流体格子数」次。
                  */
-                int k = ((sx0 != 0) ? 1 : 0) + ((sx1 != 0) ? 1 : 0)
-                      + ((sy0 != 0) ? 1 : 0) + ((sy1 != 0) ? 1 : 0);
+                int k = (int) sx0 + (int) sx1 + (int) sy0 + (int) sy1;
 
                 if (k == 0) {
                     continue;
@@ -501,10 +531,14 @@ void FLUID_FN compute_grid_forces(unsigned int nIters)
                 _iq p = -(div / k);          /* 原来的 -_IQdiv(div, s) */
                 p = _IQmpy(p, overRelaxiation);
 
-                uVel[center] -= _IQmpy(sx0, p);
-                uVel[right]  += _IQmpy(sx1, p);
-                vVel[center] -= _IQmpy(sy0, p);
-                vVel[top]    += _IQmpy(sy1, p);
+                /* 【乘法降级】_IQmpy(sx, p) 里 sx 只有 0 / 1 两种取值：
+                 * 乘 1 就是原值（Q24 下 (2^24 * p) >> 24 == p，无舍入），
+                 * 乘 0 就是 0。所以直接用条件判断，省掉 4 次 Q24 乘法 ——
+                 * 这一步同样是「迭代次数 × 流体格子数」量级。 */
+                if (sx0 != 0u) { uVel[center] -= p; }
+                if (sx1 != 0u) { uVel[right]  += p; }
+                if (sy0 != 0u) { vVel[center] -= p; }
+                if (sy1 != 0u) { vVel[top]    += p; }
             }
         }
     }
@@ -627,6 +661,33 @@ void Fluid_SetDt(_iq dt)
 const uint8_t *Fluid_GetCellType(void)
 {
     return cellType;
+}
+
+/* 取内部 particleDensity[] 数组首地址，长度 CellCount（显示层只读使用）。
+ *
+ * 用途：显示层用它做"密度阈值渲染"，替代原来的点采样 cellType[]。
+ *
+ * 为什么密度场不会闪：
+ *   density_update() 里每个粒子按**双线性权重**贡献给最近的 4 个格子
+ *   （sx/sy/tx/ty 连续变化，四者之和恒为 1）。粒子在格子边界微抖时，
+ *   相邻两格的密度是"此消彼长"的连续量，两格都保持 > 0；
+ *   而 cellType[] 是点采样——粒子中心跨过边界，格子状态**瞬间翻转**。
+ *   所以用密度判断"有没有液体"比用 cellType 平滑得多。
+ *
+ * ⚠ 有效时机：Fluid_Step() 返回后读到的就是本步的密度。
+ *   （density_update() 在 grid_to_particles() 之前跑，而后者只改粒子速度，
+ *     不动 particleDensity，所以整步结束后数据仍是最新的。） */
+const _iq *Fluid_GetParticleDensity(void)
+{
+    return particleDensity;
+}
+
+/* 静止密度（第一帧标定的"典型液体密度"）。
+ * 显示层可以用它当阈值的参考基准，这样换网格尺寸/粒子数后阈值能自适应。
+ * 返回 0 表示还没标定（第一帧之前）。 */
+_iq Fluid_GetRestDensity(void)
+{
+    return particleRestDensity;
 }
 
 uint32_t Fluid_GetFrameCount(void)

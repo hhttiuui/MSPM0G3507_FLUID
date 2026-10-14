@@ -289,15 +289,15 @@ static uint8_t spiTransferByte(const uint8_t data)
 {
     uint8_t read_data;
 
-    DL_SPI_transmitData8(SPI_IMU660RB_INST, data);
+    DL_SPI_transmitData8(SPI_LSM6DS3TRC_INST, data);
 
-    while (DL_SPI_isRXFIFOEmpty(SPI_IMU660RB_INST)) {
+    while (DL_SPI_isRXFIFOEmpty(SPI_LSM6DS3TRC_INST)) {
         /* Wait for received byte */
     }
 
-    read_data = DL_SPI_receiveData8(SPI_IMU660RB_INST);
+    read_data = DL_SPI_receiveData8(SPI_LSM6DS3TRC_INST);
 
-    while (DL_SPI_isBusy(SPI_IMU660RB_INST)) {
+    while (DL_SPI_isBusy(SPI_LSM6DS3TRC_INST)) {
         /* Wait for SPI transfer completion */
     }
 
@@ -322,8 +322,8 @@ static int32_t platform_write(
     (void)handle;
 
     DL_GPIO_clearPins(
-        GPIO_IMU660RB_PIN_IMU660RB_CS_PORT,
-        GPIO_IMU660RB_PIN_IMU660RB_CS_PIN);
+        GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PORT,
+        GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PIN);
 
     spiTransferByte(reg);
 
@@ -334,8 +334,8 @@ static int32_t platform_write(
     }
 
     DL_GPIO_setPins(
-        GPIO_IMU660RB_PIN_IMU660RB_CS_PORT,
-        GPIO_IMU660RB_PIN_IMU660RB_CS_PIN);
+        GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PORT,
+        GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PIN);
 
     return 0;
 }
@@ -358,8 +358,8 @@ static int32_t platform_read(
     (void)handle;
 
     DL_GPIO_clearPins(
-        GPIO_IMU660RB_PIN_IMU660RB_CS_PORT,
-        GPIO_IMU660RB_PIN_IMU660RB_CS_PIN);
+        GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PORT,
+        GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PIN);
 
     /* Set SPI read bit */
     reg |= 0x80U;
@@ -372,8 +372,8 @@ static int32_t platform_read(
     }
 
     DL_GPIO_setPins(
-        GPIO_IMU660RB_PIN_IMU660RB_CS_PORT,
-        GPIO_IMU660RB_PIN_IMU660RB_CS_PIN);
+        GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PORT,
+        GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PIN);
 
     return 0;
 }

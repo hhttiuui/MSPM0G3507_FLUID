@@ -128,23 +128,23 @@ bool SYSCFG_DL_SYSCTL_SYSPLL_init(void);
 
 
 
-/* Defines for SPI_IMU660RB */
-#define SPI_IMU660RB_INST                                                  SPI1
-#define SPI_IMU660RB_INST_IRQHandler                            SPI1_IRQHandler
-#define SPI_IMU660RB_INST_INT_IRQN                                SPI1_INT_IRQn
-#define GPIO_SPI_IMU660RB_PICO_PORT                                       GPIOA
-#define GPIO_SPI_IMU660RB_PICO_PIN                               DL_GPIO_PIN_18
-#define GPIO_SPI_IMU660RB_IOMUX_PICO                            (IOMUX_PINCM40)
-#define GPIO_SPI_IMU660RB_IOMUX_PICO_FUNC            IOMUX_PINCM40_PF_SPI1_PICO
-#define GPIO_SPI_IMU660RB_POCI_PORT                                       GPIOA
-#define GPIO_SPI_IMU660RB_POCI_PIN                               DL_GPIO_PIN_16
-#define GPIO_SPI_IMU660RB_IOMUX_POCI                            (IOMUX_PINCM38)
-#define GPIO_SPI_IMU660RB_IOMUX_POCI_FUNC            IOMUX_PINCM38_PF_SPI1_POCI
-/* GPIO configuration for SPI_IMU660RB */
-#define GPIO_SPI_IMU660RB_SCLK_PORT                                       GPIOA
-#define GPIO_SPI_IMU660RB_SCLK_PIN                               DL_GPIO_PIN_17
-#define GPIO_SPI_IMU660RB_IOMUX_SCLK                            (IOMUX_PINCM39)
-#define GPIO_SPI_IMU660RB_IOMUX_SCLK_FUNC            IOMUX_PINCM39_PF_SPI1_SCLK
+/* Defines for SPI_LSM6DS3TRC */
+#define SPI_LSM6DS3TRC_INST                                                SPI1
+#define SPI_LSM6DS3TRC_INST_IRQHandler                          SPI1_IRQHandler
+#define SPI_LSM6DS3TRC_INST_INT_IRQN                              SPI1_INT_IRQn
+#define GPIO_SPI_LSM6DS3TRC_PICO_PORT                                     GPIOA
+#define GPIO_SPI_LSM6DS3TRC_PICO_PIN                             DL_GPIO_PIN_18
+#define GPIO_SPI_LSM6DS3TRC_IOMUX_PICO                          (IOMUX_PINCM40)
+#define GPIO_SPI_LSM6DS3TRC_IOMUX_PICO_FUNC          IOMUX_PINCM40_PF_SPI1_PICO
+#define GPIO_SPI_LSM6DS3TRC_POCI_PORT                                     GPIOA
+#define GPIO_SPI_LSM6DS3TRC_POCI_PIN                             DL_GPIO_PIN_16
+#define GPIO_SPI_LSM6DS3TRC_IOMUX_POCI                          (IOMUX_PINCM38)
+#define GPIO_SPI_LSM6DS3TRC_IOMUX_POCI_FUNC          IOMUX_PINCM38_PF_SPI1_POCI
+/* GPIO configuration for SPI_LSM6DS3TRC */
+#define GPIO_SPI_LSM6DS3TRC_SCLK_PORT                                     GPIOA
+#define GPIO_SPI_LSM6DS3TRC_SCLK_PIN                             DL_GPIO_PIN_17
+#define GPIO_SPI_LSM6DS3TRC_IOMUX_SCLK                          (IOMUX_PINCM39)
+#define GPIO_SPI_LSM6DS3TRC_IOMUX_SCLK_FUNC          IOMUX_PINCM39_PF_SPI1_SCLK
 /* Defines for SPI_LED_DRV */
 #define SPI_LED_DRV_INST                                                   SPI0
 #define SPI_LED_DRV_INST_IRQHandler                             SPI0_IRQHandler
@@ -179,12 +179,12 @@ bool SYSCFG_DL_SYSCTL_SYSPLL_init(void);
 
 
 
-/* Port definition for Pin Group GPIO_IMU660RB */
-#define GPIO_IMU660RB_PORT                                               (GPIOA)
+/* Port definition for Pin Group GPIO_LSM6DS3TRC */
+#define GPIO_LSM6DS3TRC_PORT                                             (GPIOA)
 
-/* Defines for PIN_IMU660RB_CS: GPIOA.15 with pinCMx 37 on package pin 30 */
-#define GPIO_IMU660RB_PIN_IMU660RB_CS_PIN                       (DL_GPIO_PIN_15)
-#define GPIO_IMU660RB_PIN_IMU660RB_CS_IOMUX                      (IOMUX_PINCM37)
+/* Defines for PIN_LSM6DS3TRC_CS: GPIOA.15 with pinCMx 37 on package pin 30 */
+#define GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_PIN                   (DL_GPIO_PIN_15)
+#define GPIO_LSM6DS3TRC_PIN_LSM6DS3TRC_CS_IOMUX                  (IOMUX_PINCM37)
 /* Port definition for Pin Group LED */
 #define LED_PORT                                                         (GPIOB)
 
@@ -231,7 +231,7 @@ bool SYSCFG_DL_SYSCTL_SYSPLL_init(void);
 void SYSCFG_DL_TIMER_0_init(void);
 void SYSCFG_DL_I2C_OLED_init(void);
 void SYSCFG_DL_UART_0_init(void);
-void SYSCFG_DL_SPI_IMU660RB_init(void);
+void SYSCFG_DL_SPI_LSM6DS3TRC_init(void);
 void SYSCFG_DL_SPI_LED_DRV_init(void);
 void SYSCFG_DL_BAT_ADC_init(void);
 

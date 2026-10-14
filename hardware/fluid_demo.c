@@ -1,17 +1,43 @@
 /*
- * fluid_demo.c —— 流体模拟 → LED 点阵（**暂时不接 IMU**）
+ * fluid_demo.c —— 流体模拟 → LED 点阵（IMU 重力驱动 / 假重力可切换）
  *
  * 职责划分：
  *   fluid.c        纯算法，零外设依赖（可以原样丢到 PC 上跑）
  *   led_matrix.c   面板映射层：(列,行) → 芯片显示 RAM 位
  *   led_show.c     点阵综合演示（另一个可选程序，见 LED_SHOW_ENABLE）
- *   fluid_demo.c   本文件：算法 ↔ 点阵的胶水层
- *                  ① cellType[] → LedMatrix → 推屏
- *                  ② 假重力：方向每 DEMO_TILT_MS 换一次，让液体四个方向都流一遍
+ *   lsm6ds3trc.c   LSM6DS3TR-C 六轴 IMU 的 SPI 驱动（只提供原始/物理量）
+ *   fluid_demo.c   本文件：算法 ↔ 点阵的胶水层，以及"重力来源"的切换
+ *                  ① particleDensity[] → 亮度 → LedMatrix → 推屏
+ *                     （灰度：内核亮、表层暗；二进制模式下自动退回阈值+滞回）
+ *                  ② 重力来源：真实 IMU 加速度（默认）或假重力（fallback）
  *                  ③ 观测量全部在 dbg.fluid（没有屏，参数只能这么看）
  *
- * ⚠ 还没接 IMU：现在靠"假重力"驱动。等确认了 IMU 身份（看 dbg.who.id 是 0x6A
- *   还是 0x24）再接真实读数 —— 接的时候只需替换下面取 (ax, ay) 那几行。
+ * ==================== 重力来源与坐标映射 ====================
+ *
+ * FLUID_USE_IMU = 1（默认）：用 LSM6DS3TR-C 的加速度计读数当重力。
+ *   加速度计静止时测的是"重力反作用力"，所以**平放时某轴读 +1000mg**。
+ *
+ *   关键：IMU 的芯片坐标系 ≠ 屏幕坐标系，必须做一次坐标变换。
+ *   本板已完成标定（见下面 FLUID_IMU_* 宏处的三点实测推导），结论是
+ *   **两轴对调 + 都取负**。若换了板子或改了 IMU 贴装方向，需要重新标定：
+ *
+ *     把屏幕按"正着放 → 顺时针90° → 顺时针180°"各停一次，记下液体落在哪边，
+ *     和"应该落在哪边"（下 → 右 → 上）对比，即可解出这 4 个宏。
+ *     快速口诀：
+ *       液体流向与倾斜方向相反   → 该轴 SIGN 取反
+ *       液体左右流但你是上下倾斜 → 两个 SRC 对调
+ *
+ *   dbg.fluid.ax10 / ay10 是**送进流体后**的值（模拟单位 ×10），
+ *   可以直接确认映射对不对：正着放时应为 (0, +98) 即"向下"。
+ *
+ * FLUID_USE_IMU = 0：退回原来的"假重力"（每 DEMO_TILT_MS 换一个方向）。
+ *   用于 IMU 没焊 / 没通 / 想对比效果时。IMU 初始化失败会自动走这条路。
+ *
+ * ==================== 数值处理 ====================
+ *   原始读数有噪声，直接喂流体会让液体抖。这里做两件事：
+ *     ① 死区：|读数| 小于阈值时当 0，避免静止时液体自己慢慢漂
+ *     ② 一阶低通：α 越小越平滑但越迟钝
+ *   都是 Q24 定点运算，不引入软浮点。
  *
  * ⚠ 尺寸对得上：流体可视区 15 列 × 16 行，面板 16 列 × 15 行，两者是转置关系，
  *   由 led_matrix.h 的 LED_ORIENT_SWAP_XY 处理（方向和机械安装有关，看图案段调）。
@@ -23,9 +49,51 @@
 #include "fluid.h"
 #include "fluid_demo.h"
 #include "led_matrix.h"
+#include "ht16d33a.h"       /* 渲染要按 HT16D33A_USE_BINARY_MODE 分支（灰度 or 二进制）*/
+#include "lsm6ds3trc.h"
 #include "power.h"
 
-/* ==================== 参数 ==================== */
+/* ==================== 配置 ==================== */
+
+/* 1 = 用真实 IMU 的加速度计驱动重力；0 = 用假重力（编译期强制退回）*/
+#define FLUID_USE_IMU       1
+
+/* IMU 初始化失败时是否允许自动退回假重力（1 = 允许，程序不会卡住）*/
+#define FLUID_IMU_FALLBACK  1
+
+/* ---- 轴向映射（已按本板实测标定）----
+ * 选轴：0 = AX, 1 = AY, 2 = AZ
+ * 符号：+1 或 -1
+ *
+ * 本板实测（IMU 与屏同向竖装）：把"喂进流体的值"当 (ax, ay) 看，三种姿态下
+ *   屏幕正着放    → 液体落在【左】(-1, 0)，应为【下】(0,+1)
+ *   顺时针 90°    → 液体落在【上】(0,-1)，应为【右】(+1,0)
+ *   顺时针 180°   → 液体落在【右】(+1,0)，应为【上】(0,-1)
+ * 三点解出唯一线性映射：
+ *   ax_屏 = -ay_IMU
+ *   ay_屏 = -ax_IMU
+ * 即【两轴对调 + 都取负】。
+ *
+ * ⚠ 注意这个映射矩阵行列式 = -1，是"旋转 + 镜像"而不是纯旋转
+ *   （纯旋转行列式应为 +1）。也就是说本板 IMU 的 X-Y 平面相对屏幕是**镜像**的，
+ *   常见成因：芯片贴在 PCB 背面、或封装轴向与屏幕轴向手性相反。
+ *   这不影响使用，但换板/换贴装方向后必须重新用上面三点法标定。
+ *
+ * 标定口诀（只需改这 4 个宏）：
+ *   液体流向与倾斜方向相反   → 该轴 SIGN 取反
+ *   液体左右流但你是上下倾斜 → 两个 SRC 对调 */
+#define FLUID_IMU_AX_SRC    1     /* 屏幕 x 取 AY */
+#define FLUID_IMU_AY_SRC    0     /* 屏幕 y 取 AX */
+#define FLUID_IMU_AX_SIGN   (-1)
+#define FLUID_IMU_AY_SIGN   (-1)
+
+/* ---- 滤波参数 ---- */
+/* 死区（mg）：小于这个值当 0。静止时加速度计噪声约 ±10mg，取 40 足够稳 */
+#define FLUID_IMU_DEADBAND_MG   40
+
+/* 一阶低通系数 α（Q24）。越小越平滑、越迟钝。
+ * 0.10 ≈ 时间常数 10 帧；液体跟手但不抖。调大更跟手，调小更稳。 */
+#define FLUID_IMU_LPF_ALPHA     _IQ(0.10f)
 
 /* 假重力方向保持多久（ms）：4 个方向 下→左→上→右 循环 */
 #define DEMO_TILT_MS        2000u
@@ -39,6 +107,9 @@
 /* 每多少帧统计一次 dbg.fluid 的耗时/帧率 */
 #define DEMO_STAT_FRAMES    20u
 
+/* 加速度计 1g 对应的 mg 值（换算成模拟单位 9.8 用）*/
+#define DEMO_MG_PER_G       1000
+
 /* 假重力的 4 个方向（模拟单位）。约定：x 正 = 屏幕右，y 正 = 屏幕下 */
 static const _iq s_tiltAcc[4][2] = {
     { _IQ(0.0f),  _IQ(9.8f) },      /* 0 下 */
@@ -47,16 +118,273 @@ static const _iq s_tiltAcc[4][2] = {
     { _IQ(9.8f),  _IQ(0.0f) },      /* 3 右 */
 };
 
+/* 低通滤波器状态（Q24，单位：模拟单位）*/
+static _iq s_axFilt;
+static _iq s_ayFilt;
+
+/* 滤波器是否已用第一次读数播种（1 = 已播种）。
+ * 不播种的话，滤波器从 0 开始爬，开机头几百毫秒液体会先"自由落体"再稳住。 */
+static uint8_t s_filtSeeded;
+
+/* ==================== 重力来源：IMU ==================== */
+
+/* 从 dbg.phy 里取出指定轴、指定符号的加速度值（mg）*/
+static int32_t FluidDemo_PickAxis(uint8_t src, int8_t sign)
+{
+    int32_t v;
+
+    switch (src) {
+        case 0:  v = dbg.phy.ax_mg; break;
+        case 1:  v = dbg.phy.ay_mg; break;
+        case 2:  v = dbg.phy.az_mg; break;
+        default: v = 0;             break;
+    }
+
+    /* 死区：静止时的噪声不该被当成倾斜 */
+    if (v > -FLUID_IMU_DEADBAND_MG && v < FLUID_IMU_DEADBAND_MG) {
+        v = 0;
+    }
+
+    return (sign < 0) ? -v : v;
+}
+
+/* mg → 模拟单位（9.8 对应 1000mg）。
+ * 用 Q24 定点：result = mg * 9.8 / 1000 = mg * _IQ(9.8) / 1000
+ * 先乘后除，避免整除丢精度。 */
+static _iq FluidDemo_MgToSim(int32_t mg)
+{
+    int64_t t = (int64_t) mg * (int64_t) _IQ(9.8f);
+
+    t = t / DEMO_MG_PER_G;
+
+    return (_iq) t;
+}
+
+/* 读一次 IMU，经"选轴 → 符号 → 死区 → 低通"后输出屏幕坐标系的重力（模拟单位）*/
+static void FluidDemo_ReadGravity(_iq *ax, _iq *ay)
+{
+    _iq targetX, targetY;
+
+    /* 一次突发读拿六轴（约十几 µs），结果落在 dbg.phy / dbg.raw */
+    LSM6DS3TRC_ReadAll();
+
+    /* 选轴 + 符号 + 死区 → 模拟单位 */
+    targetX = FluidDemo_MgToSim(FluidDemo_PickAxis(FLUID_IMU_AX_SRC, FLUID_IMU_AX_SIGN));
+    targetY = FluidDemo_MgToSim(FluidDemo_PickAxis(FLUID_IMU_AY_SRC, FLUID_IMU_AY_SIGN));
+
+    if (s_filtSeeded == 0u) {
+        /* 第一次：直接赋当前值，避免从 0 慢慢爬上去（开机时液体会乱冲一下）*/
+        s_axFilt = targetX;
+        s_ayFilt = targetY;
+        s_filtSeeded = 1u;
+    } else {
+        /* 一阶低通：y[n] = y[n-1] + α·(x[n] − y[n-1]) */
+        s_axFilt += _IQmpy(FLUID_IMU_LPF_ALPHA, targetX - s_axFilt);
+        s_ayFilt += _IQmpy(FLUID_IMU_LPF_ALPHA, targetY - s_ayFilt);
+    }
+
+    *ax = s_axFilt;
+    *ay = s_ayFilt;
+}
+
 /* ==================== 渲染 ==================== */
 
-/* cellType[] → 一帧显示缓冲 → 推屏。
- * 非空气（液体 + 固体边框）都点亮，和原来的显示约定一致。 */
+/*
+ * 抗闪烁：密度阈值 + 幅度滞回（amplitude hysteresis）
+ *
+ * 现象：静止时液体**顶层及接近顶层**的格子无规律乱闪。
+ *
+ * 根因（不在 IMU，在渲染用的数据源）：
+ *   fluid.c 的 particles_to_grid() 生成 cellType[] 时是**点采样**：
+ *       xi = _IQint(particlePos * invertSpacing);   // 只看粒子中心落在哪格
+ *       cellType[INDEX(xi, yi)] = FLUID_CELL;
+ *   液体内部格子挤着多个粒子，掉一个不影响；但**表层粒子稀疏**，很多格子
+ *   只有 0~1 个粒子。静止时粒子在格子边界微抖（压力求解残差 + 粒子互斥的
+ *   微小位移），中心点就在相邻两格间反复跳：
+ *     离开的格子 → AIR_CELL（灭）
+ *     进入的格子 → FLUID_CELL（亮）
+ *   ⇒ 顶层乱闪。
+ *
+ * ❌ 曾用方案：时间迟滞（要求连续 N 帧同状态才翻转）
+ *   实测**粘滞感太强，观感不好**。原因：它只看"持续了几帧"，**不看变化幅度**，
+ *   所以分不清"单帧噪声"和"真实液面移动"——后者也被无谓推迟 N 帧。
+ *   而且 N 小压不住闪、N 大更粘，是个死结。
+ *
+ * ✅ 现方案：换用**密度场**（particleDensity[]）+ 幅度滞回
+ *   density_update() 里每个粒子按双线性权重贡献给最近 4 格，权重连续变化、
+ *   四者之和恒为 1。粒子在边界微抖时，相邻两格密度是"此消彼长"的连续量，
+ *   **两格都保持 > 0**，不会瞬间翻转 ⇒ 从源头消除了阶跃。
+ *
+ *   再配一对**上下阈值**（滞回）吃掉残余的小幅摆动：
+ *     密度 > ON  才点亮
+ *     密度 < OFF 才熄灭
+ *   ON/OFF 之间是"保持原状"的缓冲区。
+ *
+ *   为什么这个不粘滞：密度变化是**物理上真实的**——液面真涨上来，密度就真的
+ *   越过阈值，**当帧立即亮**，零延迟；而抖动时密度在阈值附近小幅摆动，被滞回
+ *   区间直接吃掉。用**幅度**滞回对付噪声，而不是用**时间**延迟。
+ *
+ * 阈值怎么定：单位是"粒子数当量"（1 个粒子满权重 = 1.0）。
+ *   液体内部格子通常 2~5，表层 0.1~0.5。
+ *   所以取 ON ≈ 0.35、OFF ≈ 0.22 能干净分开"有液/无液"，且表层不抖。
+ *   ⚠ 换了粒子数 / 网格尺寸后这两个值要重新试。
+ */
+#define FLUID_RENDER_DENSITY    1       /* 1 = 密度阈值渲染（推荐，零延迟） */
+                                        /* 0 = 退回点采样 cellType[]（会闪，仅供对比） */
+
+/* ==================== 渲染：密度 → 亮度（灰度）====================
+ *
+ * 驱动层已经切到灰度模式（见 ht16d33a.h 的 HT16D33A_USE_BINARY_MODE=0）：
+ * 每个点 1 字节 = 0~255 亮度。于是"阈值 + 幅度滞回"那一整套都可以扔掉：
+ *
+ *   阈值方案的死结：显示只有两个状态。密度在阈值附近摆动就是整格翻转 ——
+ *     阈值贴太近会闪，调高又会把液体的薄边整条削掉。
+ *   灰度方案：亮度是连续量，同样的摆动只造成 1/256 的亮度变化，肉眼看不见；
+ *     而真实液面移动**当帧**就体现为亮度渐变，零延迟、零粘滞感。
+ *
+ * 映射：level = density / DENS_FULL × 255，超出 255 截断
+ *
+ *   DENS_FULL 取"静止密度"（第一帧标定的液体平均密度，实测 ≈2.18）再乘一个
+ *   百分比。好处是**换粒子数 / 网格尺寸后自适应**，不用像阈值方案那样重新标定：
+ *     PCT=100 → 内核刚好拉满，内部层次最丰富
+ *     PCT= 60 → 更亮更满（当前）：内核一片白，只有外圈是渐变
+ *     PCT=150 → 更暗，内部层次最多
+ *   "想让液体看起来更满"就往下调 PCT；"想要更多层次"就往上调。
+ *
+ * 代价：每格 1 次 Q24 乘法（MATHACL 硬件，约 35 周期），240 格 ≈ 0.12ms；
+ *       每帧另加 1 次 64 位除法算比例系数。相对物理步可忽略。 */
+#define FLUID_RENDER_DENSITY    1       /* 1 = 密度→亮度渲染（推荐） */
+                                        /* 0 = 退回点采样 cellType[]（会闪，仅供对比） */
+
+/* 满亮度密度 = 静止密度 × 本百分比 / 100 —— 整体亮度的唯一旋钮 */
+#define FLUID_DENS_FULL_PCT     (60)
+/* 静止密度拿不到（<=0）时的兜底满量程 */
+#define FLUID_DENS_FULL_FALLBACK    _IQ(2.2f)
+
+/* 亮度上限（灰度 8 位） */
+#define FLUID_LEVEL_MAX         ((int32_t) LED_MATRIX_MAX_LEVEL)
+/* 低于这个亮度的格子肉眼基本看不见，统计"亮了多少格"时不算它 */
+#define FLUID_LEVEL_VISIBLE_MIN (8)
+
+/* 二进制模式的阈值（只有在 HT16D33A_USE_BINARY_MODE=1 时才用得上，
+ * 但一直定义着，好让 FluidDemo_Run 里上报 dbg 的代码两种模式都能编译）*/
+#define FLUID_DENSITY_ON        _IQ(0.15f)
+#define FLUID_DENSITY_OFF       _IQ(0.09f)
+
+#if HT16D33A_USE_BINARY_MODE
+/* ---- 二进制模式的退路：阈值 + 幅度滞回 ----
+ * 保留这套是为了能一键对比（把 ht16d33a.h 的 HT16D33A_USE_BINARY_MODE 改回 1）。
+ * 定标依据（2026-10 实测，130 粒子 / 15×16 网格）：内核密度 2.6、最表层 0.066，
+ * 取 ON=0.15（表层的 2.3 倍、内核的 1/17）能干净分开"有液/无液"。
+ * 调参：灯太少 → ON 往下；表层开始闪 → ON 往上。 */
+static uint8_t s_ledOn[LED_APP_COLS][LED_APP_ROWS];
+
+/* 幅度滞回：给定本帧密度和上一帧状态，返回本帧该亮还是灭。
+ * 零时间延迟——密度一越过阈值当帧就翻转。 */
+static uint8_t FluidDemo_DensityHysteresis(uint8_t ix, uint8_t iy, _iq density)
+{
+    uint8_t *on = &s_ledOn[ix][iy];
+
+    if (*on != 0u) {
+        /* 当前亮着：只有密度掉到 OFF 以下才灭 */
+        if (density < FLUID_DENSITY_OFF) {
+            *on = 0u;
+        }
+    } else {
+        /* 当前灭着：只有密度涨到 ON 以上才亮 */
+        if (density > FLUID_DENSITY_ON) {
+            *on = 1u;
+        }
+    }
+
+    return *on;
+}
+#endif /* HT16D33A_USE_BINARY_MODE */
+
+/* 一帧显示缓冲 → 推屏。
+ * 顺便统计密度/亮度分布，供 dbg.fluid 观察（开销可忽略）。 */
 static void FluidDemo_Push(void)
 {
-    const uint8_t *cellType = Fluid_GetCellType();
     uint8_t x, y;
 
     LedMatrix_Clear();
+
+#if FLUID_RENDER_DENSITY
+    const _iq *density = Fluid_GetParticleDensity();
+    _iq dMax = 0;
+    uint32_t lit     = 0u;      /* 亮度达到"看得见"的格子数 */
+    uint32_t litCore = 0u;      /* 亮度过半的格子数 ≈ 液体内核 */
+
+#if HT16D33A_USE_BINARY_MODE
+    for (x = 1u; x <= LED_APP_COLS; x++) {          /* 15 列 */
+        for (y = 1u; y <= LED_APP_ROWS; y++) {      /* 16 行 */
+            _iq d = density[CELL_INDEX((uint32_t) x, (uint32_t) y)];
+
+            if (d > dMax) {
+                dMax = d;
+            }
+
+            if (FluidDemo_DensityHysteresis((uint8_t) (x - 1u), (uint8_t) (y - 1u), d) != 0u) {
+                LedMatrix_SetCell(x, y);
+                lit++;
+                litCore++;
+            }
+        }
+    }
+#else
+    /* 灰度：每帧先算一次比例系数 k，再逐格乘。
+     *
+     *   k = 255 × 2^24 × 100 / (PCT × DENS_FULL)
+     *
+     * 注意 k 是**普通整数、不是 Q24 值**：这样 _IQmpy(d, k) = (d×k)>>24 的结果
+     * 直接就是 0..255 的亮度。
+     * ⚠ 千万别把"亮度"本身当 Q24 值来算 —— Q24 的量程只有 ±127.99，
+     *   255 根本表示不了，中间结果会溢出 int32（这个坑踩过）。 */
+    _iq densFull = Fluid_GetRestDensity();
+    int32_t k;
+    int32_t lv;
+
+    if (densFull <= _IQ(0.0f)) {
+        densFull = FLUID_DENS_FULL_FALLBACK;
+    }
+    k = (int32_t) ((((int64_t) FLUID_LEVEL_MAX) << IQ_SHIFT) * 100
+                   / ((int64_t) FLUID_DENS_FULL_PCT * (int64_t) densFull));
+
+    for (x = 1u; x <= LED_APP_COLS; x++) {          /* 15 列 */
+        for (y = 1u; y <= LED_APP_ROWS; y++) {      /* 16 行 */
+            _iq d = density[CELL_INDEX((uint32_t) x, (uint32_t) y)];
+
+            if (d > dMax) {
+                dMax = d;
+            }
+
+            lv = (d > 0) ? _IQmpy(d, k) : 0;
+            if (lv > FLUID_LEVEL_MAX) {
+                lv = FLUID_LEVEL_MAX;       /* 内核超出满量程就截断（会一片白）*/
+            }
+
+            if (lv > 0) {
+                LedMatrix_SetCellLevel(x, y, (uint8_t) lv);
+                if (lv >= FLUID_LEVEL_VISIBLE_MIN) {
+                    lit++;
+                }
+                if (lv >= (FLUID_LEVEL_MAX / 2)) {
+                    litCore++;
+                }
+            }
+        }
+    }
+
+    dbg.fluid.dens_full_x1000 = (uint32_t)(((int64_t) densFull * 1000) / IQ_ONE);
+#endif
+
+    /* 换算成 ×1000 的整数，方便在 CCS 里直接读（Q24 → 实际值 = x1000/1000）*/
+    dbg.fluid.dens_max      = (uint32_t)(((int64_t) dMax * 1000) / IQ_ONE);
+    dbg.fluid.dens_lit      = lit;
+    dbg.fluid.dens_lit_core = litCore;
+    dbg.fluid.rest_dens     = (int32_t) Fluid_GetRestDensity();  /* 应为正；是负数就说明累加溢出了 */
+#else
+    const uint8_t *cellType = Fluid_GetCellType();
 
     for (x = 1u; x <= LED_APP_COLS; x++) {          /* 15 列 */
         for (y = 1u; y <= LED_APP_ROWS; y++) {      /* 16 行 */
@@ -65,8 +393,9 @@ static void FluidDemo_Push(void)
             }
         }
     }
+#endif
 
-    LedMatrix_Flush();      /* 整帧一次发完（FD 00 + 80 00 ×32，约 144µs）*/
+    LedMatrix_Flush();      /* 灰度下 256 字节分 8 个 burst，约 1.2ms @2MHz SPI */
 }
 
 /* 模拟单位 ×10 取整，方便在 dbg 里当整数看 */
@@ -85,8 +414,64 @@ static uint8_t FluidDemo_IqSelfTest(void)
     const _iq tol = (IQ_ONE / 1024);        /* ≈1e-3，Q24 下实际误差远小于此 */
     _iq t;
 
+#if IQ_MPY_MODE == 2
+    /* ---- 硬件乘法自检（必须放在最前面：后面所有 _IQmpy 都依赖它的结论）----
+     * 覆盖位置/权重/密度/重力/负值这些真实量级，和精确软件参考逐点比对。
+     *   通过 → g_iqMpyUseHw = 1，走 MATHACL；
+     *   不通过 → 自动退回软件乘法，**数值照样正确**，只是慢。
+     * dbg.fluid.iq_mpy_ok  = 1 硬件可用 / 0 已退回软件
+     * dbg.fluid.iq_mpy_err = 最大误差（Q24 LSB），正确时应为 0~1 */
+    {
+        int32_t mpyErr = 0;
+
+        if (IQ_MpySelfTest(&mpyErr) == 0) {
+            dbg.fluid.iq_mpy_ok = 1u;
+        } else {
+            dbg.fluid.iq_mpy_ok = 0u;
+        }
+        dbg.fluid.iq_mpy_err = mpyErr;
+    }
+#else
+    dbg.fluid.iq_mpy_ok = 0xFFu;        /* 0xFF = 编译期就是软件实现 */
+#endif
+
+#if IQ_SQRT_MODE
+    /* ---- 硬件 SQRT 自检 ----
+     * 配置照抄 TI 的 __IQNsqrt_MathACL()（详见 fluid_iqmath.h 顶部注释，
+     * 那里有 2026-10 的实测数据表）。
+     * 拿 sqrt(4)=2、sqrt(9)=3 两个已知点验一遍：
+     *   通过 → 后续 _IQsqrt 走硬件，快（TI 基准 109 周期 vs 软件 553）；
+     *   不通过 → 自动退回软件开方，**仿真照样跑**，只是慢一点。
+     * 结果都能在 dbg 里看到：
+     *   dbg.fluid.iq_sqrt_ok = 1 硬件可用 / 0 已退回软件 / 0xFF 本来就是软件
+     *   dbg.fluid.iq_sqrt_sf / iq_sqrt_it = 自检点用到的参数，供以后排查
+     *   dbg.fluid.iq_sqrt_err = 实测误差，期望 ≈ -1024 LSB（硬件迭代的量化误差）*/
+    {
+        int32_t sqrtErr = 0;
+
+        if (IQ_SqrtSelfTest(&sqrtErr) == 0) {
+            dbg.fluid.iq_sqrt_ok = 1u;
+        } else {
+            dbg.fluid.iq_sqrt_ok = 0u;
+        }
+        dbg.fluid.iq_sqrt_err = sqrtErr;
+    }
+    dbg.fluid.iq_sqrt_sf = g_iqSqrtSfactor;
+    dbg.fluid.iq_sqrt_it = g_iqSqrtIter;
+#else
+    dbg.fluid.iq_sqrt_ok = 0xFFu;       /* 0xFF = 用的是软件实现，无需自检 */
+#endif
+
     t = _IQmpy(_IQ(2.0f), _IQ(3.0f));                 /* 乘法 */
     if (t < (_IQ(6.0f) - tol) || t > (_IQ(6.0f) + tol)) return 0u;
+
+    /* 非整数乘法：专门验 MATHACL MPY32 的 Q24 定标和截断。
+     * 若硬件没做 >>24（或定标不对），这里会差好几个数量级，一下就暴露。 */
+    t = _IQmpy(_IQ(0.35f), _IQ(0.35f));               /* 0.1225 */
+    if (t < (_IQ(0.1225f) - tol) || t > (_IQ(0.1225f) + tol)) return 0u;
+
+    t = _IQmpy(_IQ(1.9f), _IQ(0.123f));               /* 0.2337，压力求解里的真实量级 */
+    if (t < (_IQ(0.2337f) - tol) || t > (_IQ(0.2337f) + tol)) return 0u;
 
     t = _IQdiv(_IQ(6.0f), _IQ(3.0f));                 /* 除法 */
     if (t < (_IQ(2.0f) - tol) || t > (_IQ(2.0f) + tol)) return 0u;
@@ -111,12 +496,16 @@ static uint8_t FluidDemo_IqSelfTest(void)
 
 void FluidDemo_Run(void)
 {
-    uint32_t tiltStart;
+#if FLUID_USE_IMU
+    uint32_t imuInitRes;
+#endif
+    uint32_t tiltStart = 0u;
     uint32_t statStart;
     uint32_t frameCnt = 0u;
     uint32_t accSim = 0u;
     uint8_t  tilt = 0u;
-    _iq      ax, ay;
+    uint8_t  useImu = 0u;
+    _iq      ax = 0, ay = 0;
     uint32_t t0, t1;
 
     LedMatrix_Init();                       /* 芯片初始化 + 清屏 */
@@ -132,11 +521,61 @@ void FluidDemo_Run(void)
         }
     }
 
-    /* 流体初始化 + 预热一步（和原版 main 对齐）*/
+#if FLUID_USE_IMU
+    /* ---- 初始化 IMU，决定这次跑"真实重力"还是"假重力" ----
+     * 初始化返回码写进 dbg.fluid.imu_ok，方便对照 lsm6ds3trc.h：
+     *   0 = OK，1 = WHO_AM_I 不对（可能装的是 LSM6DSR 0x6B），2 = 寄存器读不回来
+     * 失败时（若允许 fallback）退回假重力，程序照常跑，不会卡死。 */
+    imuInitRes = LSM6DS3TRC_Init();
+    dbg.fluid.imu_ok = (uint8_t) imuInitRes;
+
+    if (imuInitRes == LSM6DS3TRC_OK) {
+        useImu = 1u;
+    } else {
+#if FLUID_IMU_FALLBACK
+        useImu = 0u;                        /* 退回假重力 */
+#else
+        /* 不允许退回：整屏点亮 + 停住，提示 IMU 有问题 */
+        LedMatrix_FillAll(1u);
+        LedMatrix_Flush();
+        for (;;) {
+            PowerKey_CheckShutdown();
+            __WFI();
+        }
+#endif
+    }
+#else
+    dbg.fluid.imu_ok = 0xFFu;               /* 0xFF = 编译期就没启用 IMU */
+#endif
+
+    dbg.fluid.imu_use = useImu;
+
+    /* 流体初始化 + 预热一步（和原版 main 对齐）。
+     * 预热用"向下"的重力，保证初态和以前一致，不受 IMU 朝向影响。 */
     Fluid_Init();
     Fluid_SetDt(DEMO_DT);
     Fluid_SetGridIter(DEMO_GRID_ITER);
     Fluid_Step(_IQ(0.0f), _IQ(9.8f));
+
+    /* 滤波器复位：第一次读 IMU 时会用当时的读数播种（见 FluidDemo_ReadGravity），
+     * 这样开机瞬间液体就朝真实重力方向，不会先"自由落体"一下 */
+    s_axFilt  = 0;
+    s_ayFilt  = 0;
+    s_filtSeeded = 0u;
+
+#if HT16D33A_USE_BINARY_MODE
+    /* 二进制模式才有的"上帧显示状态"：复位成全灭，避免开机用脏数据决定首帧。
+     * 灰度模式没有状态（亮度每帧直接从密度算出来），不需要复位。 */
+    {
+        uint8_t ix, iy;
+
+        for (ix = 0u; ix < LED_APP_COLS; ix++) {
+            for (iy = 0u; iy < LED_APP_ROWS; iy++) {
+                s_ledOn[ix][iy] = 0u;
+            }
+        }
+    }
+#endif
 
     dbg.fluid.tilt = tilt;
     tiltStart = tick_ms;
@@ -147,15 +586,20 @@ void FluidDemo_Run(void)
          * 这里只需要停下来别再干活，安静等硬件断电 */
         PowerKey_CheckShutdown();
 
-        /* ---- 假重力：每 DEMO_TILT_MS 换一个方向（接 IMU 后就换成真实读数）---- */
-        if ((uint32_t) (tick_ms - tiltStart) >= DEMO_TILT_MS) {
-            tiltStart += DEMO_TILT_MS;
-            tilt = (uint8_t) ((tilt + 1u) & 3u);
-            dbg.fluid.tilt = tilt;
-        }
+        if (useImu != 0u) {
+            /* ---- 真实重力：读 IMU → 选轴/符号/死区/低通 ---- */
+            FluidDemo_ReadGravity(&ax, &ay);
+        } else {
+            /* ---- 假重力：每 DEMO_TILT_MS 换一个方向（IMU 不可用时的退路）---- */
+            if ((uint32_t) (tick_ms - tiltStart) >= DEMO_TILT_MS) {
+                tiltStart += DEMO_TILT_MS;
+                tilt = (uint8_t) ((tilt + 1u) & 3u);
+                dbg.fluid.tilt = tilt;
+            }
 
-        ax = s_tiltAcc[tilt][0];
-        ay = s_tiltAcc[tilt][1];
+            ax = s_tiltAcc[tilt][0];
+            ay = s_tiltAcc[tilt][1];
+        }
 
         /* ---- 物理一步 ---- */
         t0 = tick_ms;
