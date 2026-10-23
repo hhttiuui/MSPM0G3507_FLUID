@@ -4,7 +4,7 @@
         {
             "label": "编译 MSPM0 工程",
             "type": "process",
-            "command": "C:\\ti\\ccs2041\\ccs\\utils\\bin\\gmake.exe",
+            "command": "C:\\ti\\ccs2050\\ccs\\utils\\bin\\gmake.exe",
             "args": [
                 "-C",
                 "${workspaceFolder}\\Debug",
