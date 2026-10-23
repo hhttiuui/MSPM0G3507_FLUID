@@ -52,6 +52,7 @@ static const vcmd_alias_t s_alias[] = {
     { "pause",  DBG_CMD_FLUID_PAUSE    },   /* pause 1       暂停物理 */
     { "reinit", DBG_CMD_FLUID_REINIT   },   /* reinit        粒子归位 */
     { "full",   DBG_CMD_FLUID_SET_FULL },   /* full 60       满亮度密度 = 静止密度×60% */
+    { "edge",   DBG_CMD_FLUID_EDGE     },   /* edge 15 50    边缘分段映射（抗锯齿）*/
 
     /* ---- LED 点阵（亮度标定）---- */
     { "bc",     DBG_CMD_LED_SET_BC     },   /* bc 128        全局亮度 0x37 */

@@ -426,6 +426,42 @@ static void FluidDemo_ReadGravity(_iq *ax, _iq *ay)
 static uint8_t  s_gammaOn      = 0u;
 static uint16_t s_densFullPct  = FLUID_DENS_FULL_PCT;
 
+/* ---- 边缘分段映射（"抗锯齿"）----
+ *
+ * 15×16 的网格上没有亚像素可用，所以"抗锯齿"只能是**把边缘那段密度单独拉开**：
+ * 边缘格子的密度只有 0~0.3，线性映射算出来是 0~40，而人眼几乎分不出 0 和 40，
+ * 边界看起来就是"突然出现"的一格。
+ *
+ * 映射曲线（两段，在 dEdge 处**连续**，不会有台阶）：
+ *
+ *       255 ┤                    ╭────────────  d ≥ dKnee：内核，不动
+ *           │                 ╱
+ *   offBody ┤──────────────╱                   dEdge ≤ d < dKnee：接到 255
+ *           │            ╱
+ *         0 ┴───────────╯                       d < dEdge：边缘段，斜率单独设
+ *           0        dEdge              dKnee
+ *
+ *   dEdge   = dKnee × s_edgePct / 100
+ *   offBody = 255 × s_edgeGain / 100     ← 边缘段最亮到哪
+ *
+ * ⚠ 方向由 gain 和 pct 的**相对大小**决定，不是单独看 gain（最容易搞混的一点）：
+ *
+ *   gain > pct   → 边缘比线性更亮、过渡更宽，像一圈柔光（抗锯齿感）
+ *                  例 edge 15 50：t=0.05 处从 13 提到 43
+ *   gain < pct   → 边缘比线性更暗，边界更硬，像描了一圈黑边
+ *                  例 edge 30 15：t=0.05 处从 13 压到 6
+ *   gain == pct  → 与线性**完全逐点一致**（退化成原样，可用来校验参数）
+ *                  例 edge 15 15
+ *
+ * 原因是两段在 dEdge 处的值必须相等才不会出现台阶：
+ *   边缘段终点 = 255×gain/100，线性映射在 dEdge 处 = 255×pct/100
+ * 两者相等 ⟺ gain == pct，此时两段斜率也相同，整体就是原来的线性映射。
+ *
+ * 默认 s_edgeOn = 0，完全走原来的单段线性映射，行为不变。 */
+static uint8_t  s_edgeOn       = 0u;
+static uint8_t  s_edgePct      = 15u;   /* 边缘段占满量程的比例 % */
+static uint8_t  s_edgeGain     = 50u;   /* 边缘段最亮 = 255 × n% */
+
 /* 二进制模式的阈值（只有在 HT16D33A_USE_BINARY_MODE=1 时才用得上，
  * 但一直定义着，好让 FluidDemo_Run 里上报 dbg 的代码两种模式都能编译）*/
 #define FLUID_DENSITY_ON        _IQ(0.15f)
@@ -526,12 +562,36 @@ static void FluidDemo_Push(void)
     _iq densFull = Fluid_GetRestDensity();
     int32_t k;
     int32_t lv;
+    _iq     dKnee    = 0;       /* 满亮度密度（Q24）*/
+    _iq     dEdge    = 0;       /* 边缘段终点（Q24）*/
+    int32_t kEdge    = 0;       /* 边缘段斜率 */
+    int32_t kBody    = 0;       /* 内核段斜率 */
+    int32_t offBody  = 0;       /* 内核段起点亮度 */
 
     if (densFull <= _IQ(0.0f)) {
         densFull = FLUID_DENS_FULL_FALLBACK;
     }
     k = (int32_t) ((((int64_t) FLUID_LEVEL_MAX) << IQ_SHIFT) * 100
                    / ((int64_t) s_densFullPct * (int64_t) densFull));
+
+    /* 每帧只算一次，逐格只做查表级的两三次乘加，开销可忽略 */
+    if (s_edgeOn != 0u) {
+        int32_t peak;
+
+        dKnee = (_iq) (((int64_t) densFull * (int64_t) s_densFullPct) / 100);
+        peak  = (int32_t) (((int64_t) FLUID_LEVEL_MAX * s_edgeGain) / 100);
+
+        dEdge   = (_iq) (((int64_t) dKnee * s_edgePct) / 100);
+        offBody = peak;
+
+        if (dEdge > 0) {
+            kEdge = (int32_t) (((int64_t) peak << IQ_SHIFT) / dEdge);
+        }
+        if (dKnee > dEdge) {
+            kBody = (int32_t) (((int64_t) (FLUID_LEVEL_MAX - peak) << IQ_SHIFT)
+                               / (dKnee - dEdge));
+        }
+    }
 
     for (x = 1u; x <= LED_APP_COLS; x++) {          /* 15 列 */
         for (y = 1u; y <= LED_APP_ROWS; y++) {      /* 16 行 */
@@ -541,9 +601,20 @@ static void FluidDemo_Push(void)
                 dMax = d;
             }
 
-            lv = (d > 0) ? _IQmpy(d, k) : 0;
-            if (lv > FLUID_LEVEL_MAX) {
-                lv = FLUID_LEVEL_MAX;       /* 内核超出满量程就截断（会一片白）*/
+            if (s_edgeOn != 0u) {
+                /* 两段连续映射：边缘段单独斜率，内核段接到 255 */
+                if (d < dEdge) {
+                    lv = _IQmpy(d, kEdge);
+                } else if (d < dKnee) {
+                    lv = offBody + _IQmpy(d - dEdge, kBody);
+                } else {
+                    lv = FLUID_LEVEL_MAX;
+                }
+            } else {
+                lv = (d > 0) ? _IQmpy(d, k) : 0;
+                if (lv > FLUID_LEVEL_MAX) {
+                    lv = FLUID_LEVEL_MAX;   /* 内核超出满量程就截断（会一片白）*/
+                }
             }
 
             if (lv > 0) {
@@ -944,6 +1015,22 @@ static void FluidDemo_CmdTask(void)
 
         case DBG_CMD_LED_GAMMA:
             s_gammaOn = (a0 != 0) ? 1u : 0u;
+            break;
+
+        case DBG_CMD_FLUID_EDGE:
+            /* edge <pct> <gain>：pct = 边缘段占满量程的比例，gain = 边缘段最亮百分比。
+             * edge 0 → 关闭，回到单段线性。 */
+            if (a0 == 0) {
+                s_edgeOn = 0u;
+            } else if ((a0 > 0) && (a0 < (int32_t) s_densFullPct) &&
+                       (a1 >= 1) && (a1 <= 100)) {
+                s_edgePct  = (uint8_t) a0;
+                s_edgeGain = (uint8_t) a1;
+                s_edgeOn   = 1u;
+            } else {
+                /* pct 必须小于 full；gain 必须给（漏参数会被当成 0）*/
+                dbg.cmd.result = 2u;
+            }
             break;
 
         default:

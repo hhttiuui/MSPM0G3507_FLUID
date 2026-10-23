@@ -316,6 +316,7 @@ typedef struct {
 #define DBG_CMD_FLUID_PAUSE         0x0104u  /* arg[0]: 1=暂停物理，0=继续 */
 #define DBG_CMD_FLUID_REINIT        0x0105u  /* 重新初始化粒子（液体归位）*/
 #define DBG_CMD_FLUID_SET_FULL      0x0106u  /* arg[0]: 满亮度密度 = 静止密度×n/100 */
+#define DBG_CMD_FLUID_EDGE          0x0107u  /* arg[0]=边缘段% arg[1]=边缘最亮%；arg[0]=0 关闭 */
 
 /* ---- LED 点阵（亮度标定用）---- */
 #define DBG_CMD_LED_SET_BC          0x0201u  /* arg[0]: 全局亮度 0~255（0x37）*/
