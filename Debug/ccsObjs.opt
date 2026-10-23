@@ -18,6 +18,8 @@
 "./hardware/led_show.o"
 "./hardware/lsm6ds3trc.o"
 "./hardware/power.o"
+"./hardware/vcmd.o"
+"./hardware/vofa.o"
 -l"./device_linker.cmd"
 -ldevice.cmd.genlibs
 -llibc.a

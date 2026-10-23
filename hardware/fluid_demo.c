@@ -716,18 +716,41 @@ static void FluidDemo_LowBatteryAction(void)
  * 执行结果写 dbg.cmd.result：1 = 成功，2 = 参数越界，3 = 未知命令。
  */
 
-/* 画 14 级亮度阶梯（第 2~15 行每行一个亮度），外框全亮。
- * 亮度标定时拿它当标尺：每一行就是一个已知的 DDRAM 值，
- * 用探头逐行读就能得到 DDRAM → 实际光输出的曲线。 */
-static void FluidDemo_DrawRamp(void)
+/* ==================== 亮度阶梯（两种） ====================
+ *
+ * 两条命令画的**内容完全相同**，只有亮度取值不同，专门用来对比"线性 vs gamma"：
+ *
+ *   线性（ramp） ：0 19 39 58 78 98 117 137 156 176 196 215 235 255
+ *   gamma2.2（rampg）：0  1  4 10 19 31  47  65  88 114 143 177 214 255
+ *
+ * 为什么需要 gamma：LED 的 PWM 占空比是**物理线性**的（手机传感器测出来就是
+ * 均匀梯度），但人眼感知约等于 `亮度^0.45`。所以线性台阶里，前 6 级就吃掉了
+ * 75% 的感知变化，后 8 级看起来几乎一样亮 —— 实测就是这样。
+ *
+ * 用途分工：
+ *   ramp  —— **亮度标定**用。每行一个已知 DDRAM 值，探头逐行读，
+ *            得到 DDRAM → 实际光输出的物理曲线（这条曲线应该是线性的）。
+ *   rampg —— **观感验收**用。肉眼看上去才是均匀的 14 级。
+ *            以后给自定义画面做 gamma 表，就按这条命令的取值为基准。
+ *
+ * 表长必须等于台阶数（LED_APP_ROWS - 2 = 14），下标 = y - 2。 */
+static const uint8_t s_rampLinear[LED_APP_ROWS - 2u] = {
+    0u, 19u, 39u, 58u, 78u, 98u, 117u, 137u, 156u, 176u, 196u, 215u, 235u, 255u
+};
+
+static const uint8_t s_rampGamma[LED_APP_ROWS - 2u] = {
+    0u, 1u, 4u, 10u, 19u, 31u, 47u, 65u, 88u, 114u, 143u, 177u, 214u, 255u
+};
+
+/* 按给定的 14 级表画阶梯（第 2~15 行每行一个亮度），外框全亮。 */
+static void FluidDemo_DrawRampFrom(const uint8_t *levels)
 {
     uint8_t x, y;
 
     LedMatrix_Clear();
 
     for (y = 2u; y <= (uint8_t) (LED_APP_ROWS - 1u); y++) {
-        uint8_t lv = (uint8_t) (((uint32_t) (y - 2u) * 255u)
-                                / (uint32_t) (LED_APP_ROWS - 3u));
+        uint8_t lv = levels[y - 2u];
 
         for (x = 1u; x <= LED_APP_COLS; x++) {
             LedMatrix_SetCellLevel(x, y, lv);
@@ -746,6 +769,9 @@ static void FluidDemo_DrawRamp(void)
 
     LedMatrix_Flush();
 }
+
+static void FluidDemo_DrawRamp(void)      { FluidDemo_DrawRampFrom(s_rampLinear); }
+static void FluidDemo_DrawRampGamma(void) { FluidDemo_DrawRampFrom(s_rampGamma);  }
 
 static void FluidDemo_CmdTask(void)
 {
@@ -876,6 +902,11 @@ static void FluidDemo_CmdTask(void)
         case DBG_CMD_LED_RAMP:
             s_dispLock = 1u;
             FluidDemo_DrawRamp();
+            break;
+
+        case DBG_CMD_LED_RAMP_GAMMA:
+            s_dispLock = 1u;
+            FluidDemo_DrawRampGamma();
             break;
 
         case DBG_CMD_LED_LOCK:

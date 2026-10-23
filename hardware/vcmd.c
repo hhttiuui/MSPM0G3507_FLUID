@@ -58,7 +58,8 @@ static const vcmd_alias_t s_alias[] = {
     { "fill",   DBG_CMD_LED_FILL       },   /* fill 200      整屏亮度 */
     { "off",    DBG_CMD_LED_OFF        },   /* off           全灭 */
     { "px",     DBG_CMD_LED_PX         },   /* px 3 5 200    单点 */
-    { "ramp",   DBG_CMD_LED_RAMP       },   /* ramp          14 级阶梯 */
+    { "ramp",   DBG_CMD_LED_RAMP       },   /* ramp          14 级线性阶梯（标定用）*/
+    { "rampg",  DBG_CMD_LED_RAMP_GAMMA },   /* rampg         14 级 gamma 阶梯（看观感）*/
     { "lock",   DBG_CMD_LED_LOCK       },   /* lock 1        冻结流体渲染 */
 };
 

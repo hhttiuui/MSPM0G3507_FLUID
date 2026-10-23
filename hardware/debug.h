@@ -324,6 +324,7 @@ typedef struct {
 #define DBG_CMD_LED_PX              0x0205u  /* arg[0]=x arg[1]=y arg[2]=lv */
 #define DBG_CMD_LED_RAMP            0x0206u  /* 画 14 级亮度阶梯（标定用）*/
 #define DBG_CMD_LED_LOCK            0x0207u  /* arg[0]: 1=冻结流体渲染 */
+#define DBG_CMD_LED_RAMP_GAMMA      0x0208u  /* 画 gamma2.2 校正的 14 级阶梯（观感验收用）*/
 
 typedef struct {
     dbg_who_t   who;
