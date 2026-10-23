@@ -51,6 +51,7 @@ static const vcmd_alias_t s_alias[] = {
     { "shake",  DBG_CMD_FLUID_SET_SHAKE},   /* shake 150     摇晃增益 1.5 */
     { "pause",  DBG_CMD_FLUID_PAUSE    },   /* pause 1       暂停物理 */
     { "reinit", DBG_CMD_FLUID_REINIT   },   /* reinit        粒子归位 */
+    { "full",   DBG_CMD_FLUID_SET_FULL },   /* full 60       满亮度密度 = 静止密度×60% */
 
     /* ---- LED 点阵（亮度标定）---- */
     { "bc",     DBG_CMD_LED_SET_BC     },   /* bc 128        全局亮度 0x37 */
@@ -61,6 +62,7 @@ static const vcmd_alias_t s_alias[] = {
     { "ramp",   DBG_CMD_LED_RAMP       },   /* ramp          14 级线性阶梯（标定用）*/
     { "rampg",  DBG_CMD_LED_RAMP_GAMMA },   /* rampg         14 级 gamma 阶梯（看观感）*/
     { "lock",   DBG_CMD_LED_LOCK       },   /* lock 1        冻结流体渲染 */
+    { "gam",    DBG_CMD_LED_GAMMA      },   /* gam 1         流体渲染走 gamma2.2 */
 };
 
 #define VCMD_ALIAS_N  (sizeof(s_alias) / sizeof(s_alias[0]))

@@ -315,6 +315,7 @@ typedef struct {
 #define DBG_CMD_FLUID_SET_SHAKE     0x0103u  /* arg[0]: 摇晃增益 ×100（150 = 1.5）*/
 #define DBG_CMD_FLUID_PAUSE         0x0104u  /* arg[0]: 1=暂停物理，0=继续 */
 #define DBG_CMD_FLUID_REINIT        0x0105u  /* 重新初始化粒子（液体归位）*/
+#define DBG_CMD_FLUID_SET_FULL      0x0106u  /* arg[0]: 满亮度密度 = 静止密度×n/100 */
 
 /* ---- LED 点阵（亮度标定用）---- */
 #define DBG_CMD_LED_SET_BC          0x0201u  /* arg[0]: 全局亮度 0~255（0x37）*/
@@ -325,6 +326,7 @@ typedef struct {
 #define DBG_CMD_LED_RAMP            0x0206u  /* 画 14 级亮度阶梯（标定用）*/
 #define DBG_CMD_LED_LOCK            0x0207u  /* arg[0]: 1=冻结流体渲染 */
 #define DBG_CMD_LED_RAMP_GAMMA      0x0208u  /* 画 gamma2.2 校正的 14 级阶梯（观感验收用）*/
+#define DBG_CMD_LED_GAMMA           0x0209u  /* arg[0]: 1 = 流体渲染走 gamma2.2 表 */
 
 typedef struct {
     dbg_who_t   who;

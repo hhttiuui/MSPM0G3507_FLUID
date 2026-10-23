@@ -68,6 +68,11 @@ void LedMatrix_SetPanelLevel(uint8_t col, uint8_t row, uint8_t level);
 /* 按**应用坐标**设一点亮度：x 1..15、y 1..16，内部按 LED_ORIENT_* 转到面板坐标 */
 void LedMatrix_SetCellLevel(uint8_t x, uint8_t y, uint8_t level);
 
+/* gamma2.2 查表：把线性亮度 0~255 映射成感知均匀的 DDRAM 值。
+ * 表在 led_matrix.c 里（256 字节 Flash），查表约 3 个周期。
+ * 只影响中间调 —— 已经截断到 255 的点查完还是 255。 */
+uint8_t LedMatrix_Gamma(uint8_t linear);
+
 /* 直写显示 RAM 里的某个字节（诊断用）。灰度模式下就是这一字节的亮度 */
 void LedMatrix_SetRawLevel(uint8_t addr, uint8_t level);
 

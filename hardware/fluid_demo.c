@@ -416,6 +416,16 @@ static void FluidDemo_ReadGravity(_iq *ax, _iq *ay)
 /* 低于这个亮度的格子肉眼基本看不见，统计"亮了多少格"时不算它 */
 #define FLUID_LEVEL_VISIBLE_MIN (8)
 
+/* 渲染的两个"观感"旋钮，串口可调，默认值 = 原来写死的宏（行为不变）：
+ *   s_gammaOn     ：0 = 线性映射（原样）；1 = 走 led_matrix 的 gamma2.2 表
+ *   s_densFullPct ：满亮度对应的密度 = 静止密度 × 这个百分比 / 100
+ *
+ * 为什么两个都要：gamma 只改中间调，**救不了已经截断到 255 的内核**。
+ * 内核一片白是因为 s_densFullPct = 60 太低 —— 液体内部密度普遍超过
+ * 静止密度的 60%，全被截到 255 了。想把层次拉出来得调大这个值。 */
+static uint8_t  s_gammaOn      = 0u;
+static uint16_t s_densFullPct  = FLUID_DENS_FULL_PCT;
+
 /* 二进制模式的阈值（只有在 HT16D33A_USE_BINARY_MODE=1 时才用得上，
  * 但一直定义着，好让 FluidDemo_Run 里上报 dbg 的代码两种模式都能编译）*/
 #define FLUID_DENSITY_ON        _IQ(0.15f)
@@ -521,7 +531,7 @@ static void FluidDemo_Push(void)
         densFull = FLUID_DENS_FULL_FALLBACK;
     }
     k = (int32_t) ((((int64_t) FLUID_LEVEL_MAX) << IQ_SHIFT) * 100
-                   / ((int64_t) FLUID_DENS_FULL_PCT * (int64_t) densFull));
+                   / ((int64_t) s_densFullPct * (int64_t) densFull));
 
     for (x = 1u; x <= LED_APP_COLS; x++) {          /* 15 列 */
         for (y = 1u; y <= LED_APP_ROWS; y++) {      /* 16 行 */
@@ -537,7 +547,15 @@ static void FluidDemo_Push(void)
             }
 
             if (lv > 0) {
-                LedMatrix_SetCellLevel(x, y, (uint8_t) lv);
+                /* gamma 只作用于**送进显示器的值**；下面两个统计仍用线性 lv，
+                 * 这样 dbg.fluid.dens_lit / dens_lit_core 在 gam 开关前后可比。 */
+                uint8_t out = (uint8_t) lv;
+
+                if (s_gammaOn != 0u) {
+                    out = LedMatrix_Gamma(out);
+                }
+                LedMatrix_SetCellLevel(x, y, out);
+
                 if (lv >= FLUID_LEVEL_VISIBLE_MIN) {
                     lit++;
                 }
@@ -844,6 +862,17 @@ static void FluidDemo_CmdTask(void)
             Fluid_Init();
             break;
 
+        case DBG_CMD_FLUID_SET_FULL:
+            /* 满亮度密度 = 静止密度 × arg0 / 100。
+             * 调大 → 只有最密的内核才到 255，层次更丰富但整体变暗；
+             * 调小 → 更容易截断，整片发白。 */
+            if ((a0 >= 20) && (a0 <= 300)) {
+                s_densFullPct = (uint16_t) a0;
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
         /* ---------------- LED 点阵（亮度标定） ----------------
          * ⚠ 画静态画面的三条命令（fill / off / px / ramp）都会**自动置
          *   s_dispLock**：不锁的话下一帧就被流体覆盖了，根本来不及测。 */
@@ -911,6 +940,10 @@ static void FluidDemo_CmdTask(void)
 
         case DBG_CMD_LED_LOCK:
             s_dispLock = (a0 != 0) ? 1u : 0u;
+            break;
+
+        case DBG_CMD_LED_GAMMA:
+            s_gammaOn = (a0 != 0) ? 1u : 0u;
             break;
 
         default:
