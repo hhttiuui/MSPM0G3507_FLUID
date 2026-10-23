@@ -30,3 +30,8 @@ Thumbs.db
 Desktop.ini
 *.swp
 *~
+
+# ---------- 不属于本工程的遗留数据 ----------
+# test_results/ 是电机 PID / 开环 PWM 那套工程的实测记录，
+# 与流体模拟无关，已在 d318ce6 从仓库删除。这条规则防止再被误加回来。
+test_results/
