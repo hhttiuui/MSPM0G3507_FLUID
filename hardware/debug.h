@@ -166,6 +166,21 @@ typedef struct {
 typedef struct {
     int32_t  ax10;        /* 送进流体的 x 加速度 ×10（模拟单位，整数好读） */
     int32_t  ay10;        /* 同上，y（约定 y 正 = 屏幕下方） */
+    /* ---- 重力 / 摇晃 双通路分解的观测值（×10，模拟单位；原理与调参见
+     *      fluid_demo.c 顶部的《重力 / 摇晃：双通路分解》）----
+     * ax10/ay10 是**两条通路相加后**的总量（也就是真正喂给流体的值），
+     * 下面 4 个是拆开看的两条通路：
+     *   slow = 重力 / 倾角分量（慢通路）
+     *   fast = 摇晃 / 惯性分量（快通路，**已含 FLUID_SHAKE_GAIN**）
+     * 判读：静止时 slow ≈ ±98（1g 向下）、fast ≈ 0；
+     *       左右摇时 fast 大幅摆动（几十~几百）、slow 基本不动。
+     * ⚠ 只在"真实 IMU"模式下更新；假重力模式不走分解，这 4 个一直是 0。 */
+    int32_t  ax_slow10;
+    int32_t  ay_slow10;
+    int32_t  ax_fast10;
+    int32_t  ay_fast10;
+    uint32_t shake_pk10;  /* 上一个窗口内 |fast| 的峰值 ×10（静止 ≈0，摇起来几百）。
+                           * 这是**窗口量**：发布后清零重算 */
     uint32_t sim_ms_x10;  /* 上一窗口的单步物理耗时 ×10（单位 0.1ms） */
     uint32_t fps;         /* 上一窗口的帧率 */
     uint32_t frames;      /* 累计物理步数 */
@@ -224,6 +239,33 @@ typedef struct {
     uint32_t hold_ms;
 } dbg_pwr_t;
 
+/* ---- 电池采样（实现见 hardware/battery.c）----
+ * 这个模块现在只做"测量"，不做任何判断/关机动作。
+ * 判读顺序：
+ *   cnt 不涨            → Battery_Task() 没被调用，或 ADC 没在转换
+ *   err 非 0            → 转换超时（ADC 配置 / 中断问题）
+ *   mv 与万用表差很多   → 分压比(BAT_DIV_*) 或 VDDA(BAT_VDDA_MV) 不准
+ *   mv_max − mv_min 偏大 → 读数被 LED 负载调制。文档实测同一颗电池
+ *                          LED 全灭读 3333、全亮读 3601（差 268 mV），
+ *                          此时读数只能当参考，不能用来定低电阈值
+ *   mv = 0 且 err 不涨  → raw = 0，分压断了 / 电池没接 */ 
+typedef struct {
+    uint16_t raw;       /* 最近一次中值滤波后的原始值 0~4095 */
+    uint32_t mv;        /* 换算后的 VBAT (mV)；0 表示读取失败 */
+    uint32_t mv_min;    /* 自开机以来最小（≈ LED 全亮时的"带载"读数） */
+    uint32_t mv_max;    /* 自开机以来最大（≈ LED 全灭时的"空载"读数） */
+    uint32_t cnt;       /* 成功采样次数（单调） */
+    uint32_t err;       /* 转换超时次数，应为 0 */
+
+    /* ---- 运行期低电保护（见 battery.h）----
+     * quiet_cnt 停滞     → 渲染层没配合安静窗口（Battery_QuietBegin 没被消费）
+     * low_cnt 在涨      → 连续低电次数，到 BAT_LOW_CONFIRM(3) 就关机
+     * shutdown = 1      → 已因低电关机 */
+    uint32_t quiet_cnt; /* 熄屏精确采样次数 */
+    uint8_t  low_cnt;   /* 连续低电次数（0 ~ BAT_LOW_CONFIRM）*/
+    uint8_t  shutdown;  /* 1 = 已触发低电关机 */
+} dbg_bat_t;
+
 typedef struct {
     dbg_who_t   who;
     dbg_spi_t   spi;
@@ -235,6 +277,7 @@ typedef struct {
     dbg_pwr_t   pwr;
     dbg_led_t   led;
     dbg_fluid_t fluid;
+    dbg_bat_t   bat;
     dbg_fault_t fault;
     dbg_test_t  test;
 } dbg_t;

@@ -104,6 +104,12 @@
 #define HT16D33A_CURRENT_33MA           (0x0Au)  /* 10 ≈ 33mA，手册默认 */
 #define HT16D33A_CURRENT_6MA            (0x01u)  /* 1  ≈ 6mA，省电档 */
 
+/* 0x37 全局亮度 BC7..0 的取值范围。
+ * 0 = 全灭（低电检查的"熄屏窗口"就用它：一条命令立即生效，
+ * 不用清 RAM、也不用等扫描走完，采样完再写回 MAX 即可恢复画面）。 */
+#define HT16D33A_BRIGHTNESS_MAX         (0xFFu)
+#define HT16D33A_BRIGHTNESS_OFF         (0x00u)
+
 /* ==================== 显示模式选择 ====================
  * 手册 p19~23（二进制）与 p24~26（灰度）各有一套 RAM 映射表。
  *
@@ -176,5 +182,9 @@ void HT16D33A_FillRam(uint8_t addr, uint8_t value, uint16_t len);
 
 /* 写 LED on/off（使能）RAM —— 见上面的图案定义 */
 void HT16D33A_WriteOnOff(uint8_t pattern);
+
+/* 设置全局亮度（0x37 的 BC7..0）：0 = 全灭，0xFF = 最亮。
+ * 用于低电检查的熄屏窗口 —— 立即生效，不影响显示 RAM 里的内容。 */
+void HT16D33A_SetBrightness(uint8_t level);
 
 #endif /* __HT16D33A_H */

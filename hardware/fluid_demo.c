@@ -27,6 +27,10 @@
  *       液体流向与倾斜方向相反   → 该轴 SIGN 取反
  *       液体左右流但你是上下倾斜 → 两个 SRC 对调
  *
+ *   ⚠ 这个映射对**摇晃**同样成立：加速度计测的是比力，"运动加速度"和重力反作用
+ *     走的是同一条换算链，所以左右摇时给出的方向自动就是"惯性滞后"的方向
+ *     （向右推板子 → 液体往左堆），不需要为摇晃另加符号。
+ *
  *   dbg.fluid.ax10 / ay10 是**送进流体后**的值（模拟单位 ×10），
  *   可以直接确认映射对不对：正着放时应为 (0, +98) 即"向下"。
  *
@@ -34,9 +38,12 @@
  *   用于 IMU 没焊 / 没通 / 想对比效果时。IMU 初始化失败会自动走这条路。
  *
  * ==================== 数值处理 ====================
- *   原始读数有噪声，直接喂流体会让液体抖。这里做两件事：
+ *   原始读数有噪声，直接喂流体会让液体抖。这里做三件事：
  *     ① 死区：|读数| 小于阈值时当 0，避免静止时液体自己慢慢漂
  *     ② 一阶低通：α 越小越平滑但越迟钝
+ *     ③ 双通路分解：把读数按频率拆成"慢 = 重力/倾角"和"快 = 摇晃/惯性"，
+ *        于是"摇一摇液体跟着晃"和"静止不抖"可以同时成立 —— 详见下面的
+ *        《重力 / 摇晃：双通路分解》
  *   都是 Q24 定点运算，不引入软浮点。
  *
  * ⚠ 尺寸对得上：流体可视区 15 列 × 16 行，面板 16 列 × 15 行，两者是转置关系，
@@ -46,6 +53,7 @@
 #include "ti_msp_dl_config.h"
 #include "clock.h"
 #include "debug.h"
+#include "battery.h"
 #include "fluid.h"
 #include "fluid_demo.h"
 #include "led_matrix.h"
@@ -87,13 +95,86 @@
 #define FLUID_IMU_AX_SIGN   (-1)
 #define FLUID_IMU_AY_SIGN   (-1)
 
-/* ---- 滤波参数 ---- */
-/* 死区（mg）：小于这个值当 0。静止时加速度计噪声约 ±10mg，取 40 足够稳 */
+/* ==================== 重力 / 摇晃：双通路分解 ====================
+ *
+ * 问题：一个低通没法同时满足两件事 ——
+ *   静态平滑（α 小）：静止 / 慢倾斜时液体不抖，但手摇 1~3Hz 的左右晃动会被
+ *                     衰减到只剩两三成，液体只是"慢慢歪过去"，不"晃"；
+ *   动态跟手（α 大）：摇起来有反应，但静止时噪声直通，液体表面自己抖。
+ *   实测：把 FLUID_IMU_LPF_ALPHA 从 0.10 调到 0.90，摇晃立刻明显 —— 但也正因
+ *   为"调大就抖"，这件事不能靠调 α 解决。
+ *
+ * 解法：把加速度计读数按频率拆成两条通路。加速度计测的是**比力**，本身就等于
+ *       "重力反作用 + 自身运动加速度"，所以两条通路就是同一次读数的分解：
+ *
+ *                     ┌─ 死区 40mg → 慢通路低通 α_slow ─────────────────┐
+ *   raw ─(选轴/符号)──┤                                                  ├→ 相加 → 限幅 → Fluid_Step
+ *                     └─ (raw − 慢) 高通 → α_fast 低通 → 死区 90mg ──────┘（× 增益）
+ *
+ *   · 慢通路 = 原来的行为，**逐位不变**（同一个 α、同一个死区）⇒ 静态手感不会
+ *     和以前有任何差别
+ *   · 快通路 = 读数里"变化的那部分"。静止时它恒为 0（增益再大也不起作用），
+ *     一摇就出来 ⇒ 摇晃强度可以独立调，不用拿静态平滑去换
+ *   · 高通天然"回中"：停止摇晃后快通路自己衰减到 0，液体回到只受重力，
+ *     不需要任何状态机 / 计时器
+ *   · 附带好处：快速倾斜时也会有真实的惯性滞后（快通路给出瞬时误差、慢通路
+ *     随后追上），比原来"纯跟随"更像液体
+ *
+ * ⚠ 这里**有两个死区，作用不同，不能合并**（30fps 离线仿真实测）：
+ *
+ *   FLUID_IMU_DEADBAND_MG (40mg)：**慢通路输入**的门槛，小于它就当 0，避免静止
+ *     时液体自己慢慢漂。但它只在"信号本身很小"时才管用 —— 板子有较大静态倾斜时
+ *     （比如某轴持续 800mg），骑在上面的 ±5~10mg 噪声是**穿过**这个死区进到后面去的。
+ *
+ *   FLUID_SHAKE_DEADBAND (90mg)：**快通路输出后**的门槛。只有它能挡住两种假摇晃：
+ *     ① 倾斜态下的噪声（快通路把它看成"变化"）；
+ *     ② 信号压在 40mg 死区边界上时，输入会在 0 和 40mg 之间反复跳，快通路会把这
+ *        种方波当成摇晃。
+ *     实测：去掉它，静止倾斜时快通路输出 ≈0.13 模拟单位的抖动，和当年单通路
+ *     α=0.90 的抖动量级一样（也就是白改）。加上它，静止时抖动回到 α=0.10 的水平。
+ *
+ *   ⇒ 所以快通路的输入必须用**未加死区的原始值**（避开②的跳变），门槛留给输出端。
+ *
+ * ⚠ 两条通路的 α 都是"每帧一次"的定义，所以等效截止频率会跟着帧率走
+ *   （fps ≈ 30 时把 0.10 记成 ≈0.5Hz、0.60 记成 ≈2.9Hz）。本工程主循环是定长的
+ *   （单步物理 ≈28ms），帧率很稳，所以不做 dt 补偿；以后如果帧长抖动明显，
+ *   可以用 tick_ms 实测 Δt 折算 α' = α × Δt/33ms（上限 1）。
+ */
+
+/* 死区（mg）：小于这个值当 0。静止时加速度计噪声约 ±10mg，取 40 足够稳。
+ * ⚠ 这是**慢通路（重力）**的门槛，只作用于慢通路 */
 #define FLUID_IMU_DEADBAND_MG   40
 
+/* ---- 慢通路：重力 / 倾角 ---- */
 /* 一阶低通系数 α（Q24）。越小越平滑、越迟钝。
- * 0.10 ≈ 时间常数 10 帧；液体跟手但不抖。调大更跟手，调小更稳。 */
+ * 0.10 ≈ 时间常数 10 帧；液体跟手但不抖。
+ * ⚠ 现在有快通路了，这里**不要再为了摇晃去调大** —— 调大只会让静止的液体跟着
+ *   噪声抖，摇晃那一半应该交给 FLUID_SHAKE_ALPHA / FLUID_SHAKE_GAIN */
 #define FLUID_IMU_LPF_ALPHA     _IQ(0.10f)
+
+/* ---- 快通路：摇晃 / 惯性 ---- */
+/* 快通路的低通系数 α（Q24），只负责吃掉高通残留的噪声。
+ * 0.60 ≈ 时间常数 1.7 帧（fps≈30 时截止 ≈2.9Hz）：2Hz 的手摇通过 ~0.82，
+ * 再乘下面的增益，观感比当初 α=0.90 的单通路还活跃一点。
+ * 调大更跟手也更毛糙，调小更稳但摇不动。 */
+#define FLUID_SHAKE_ALPHA       _IQ(0.60f)
+
+/* 摇晃增益（Q24）。1.0 = 物理正确（摇晃 0.3g 就是 30% 的重力）。
+ * 上面那条低通会吃掉一部分幅度，所以默认给 1.5，"摇"的观感才和物理相当。
+ * 想让液体更疯就往上加（2.0 已经很夸张），觉得太晃就减到 1.0。 */
+#define FLUID_SHAKE_GAIN        _IQ(1.5f)
+
+/* 摇晃死区（模拟单位）：90mg = 90 × 9.8/1000 = 0.882。
+ * 为什么必须有它、为什么不能和 FLUID_IMU_DEADBAND_MG 合并，见上面的《双通路分解》。
+ * 想摇得更灵敏就往下调（60mg 也还能用），想更稳就往上调（120mg）。
+ * ⚠ 它是在 α_fast 低通**之后**生效的，所以改它会同时影响灵敏度与静态抖动。 */
+#define FLUID_SHAKE_DEADBAND    _IQ(0.882f)
+
+/* 复合之后的限幅（模拟单位，9.8 = 1g）。
+ * 加速度计本身在 ±2g 就削顶了，这里纯粹是防"磕桌子"那种单帧尖峰被放大后把
+ * 液体一下甩到边上（Q24 量程 ±127 不会溢出，只是手感问题）。
+ * 想保留最猛的冲击感可以调到 _IQ(39.2f)（= 4g，等于不限）。 */
+#define FLUID_ACC_CLAMP         _IQ(24.5f)
 
 /* 假重力方向保持多久（ms）：4 个方向 下→左→上→右 循环 */
 #define DEMO_TILT_MS        2000u
@@ -118,9 +199,13 @@ static const _iq s_tiltAcc[4][2] = {
     { _IQ(9.8f),  _IQ(0.0f) },      /* 3 右 */
 };
 
-/* 低通滤波器状态（Q24，单位：模拟单位）*/
-static _iq s_axFilt;
-static _iq s_ayFilt;
+/* 慢通路状态（重力/倾角的低通输出，Q24，单位：模拟单位）*/
+static _iq s_axSlow;
+static _iq s_aySlow;
+
+/* 快通路状态（摇晃分量，Q24，单位：模拟单位。**不含增益**，增益在合成时乘）*/
+static _iq s_sxFast;
+static _iq s_syFast;
 
 /* 滤波器是否已用第一次读数播种（1 = 已播种）。
  * 不播种的话，滤波器从 0 开始爬，开机头几百毫秒液体会先"自由落体"再稳住。 */
@@ -128,7 +213,19 @@ static uint8_t s_filtSeeded;
 
 /* ==================== 重力来源：IMU ==================== */
 
-/* 从 dbg.phy 里取出指定轴、指定符号的加速度值（mg）*/
+/* 死区（mg）：小于阈值的当 0。
+ * ⚠ **只给慢通路（重力）用**：快通路的输入必须用未加死区的原始值，否则信号压在
+ *   死区边界上时会 0/40mg 反复跳，那种方波会被快通路误当成摇晃（见《双通路分解》）*/
+static int32_t FluidDemo_Deadband(int32_t mg)
+{
+    if (mg > -FLUID_IMU_DEADBAND_MG && mg < FLUID_IMU_DEADBAND_MG) {
+        return 0;
+    }
+
+    return mg;
+}
+
+/* 从 dbg.phy 里取出指定轴、指定符号的加速度值（mg）。**不做死区** */
 static int32_t FluidDemo_PickAxis(uint8_t src, int8_t sign)
 {
     int32_t v;
@@ -138,11 +235,6 @@ static int32_t FluidDemo_PickAxis(uint8_t src, int8_t sign)
         case 1:  v = dbg.phy.ay_mg; break;
         case 2:  v = dbg.phy.az_mg; break;
         default: v = 0;             break;
-    }
-
-    /* 死区：静止时的噪声不该被当成倾斜 */
-    if (v > -FLUID_IMU_DEADBAND_MG && v < FLUID_IMU_DEADBAND_MG) {
-        v = 0;
     }
 
     return (sign < 0) ? -v : v;
@@ -160,31 +252,76 @@ static _iq FluidDemo_MgToSim(int32_t mg)
     return (_iq) t;
 }
 
-/* 读一次 IMU，经"选轴 → 符号 → 死区 → 低通"后输出屏幕坐标系的重力（模拟单位）*/
+/* 读一次 IMU：选轴 → 符号 → 双通路分解（慢=重力 / 快=摇晃）→ 相加 → 限幅，
+   输出屏幕坐标系下"该喂给流体的总加速度"（模拟单位）。
+   参数与原理见文件上方《重力 / 摇晃：双通路分解》。 */
 static void FluidDemo_ReadGravity(_iq *ax, _iq *ay)
 {
-    _iq targetX, targetY;
+    int32_t rawXmg, rawYmg;
+    _iq     slowInX, slowInY;
+    _iq     totalX, totalY;
 
     /* 一次突发读拿六轴（约十几 µs），结果落在 dbg.phy / dbg.raw */
     LSM6DS3TRC_ReadAll();
 
-    /* 选轴 + 符号 + 死区 → 模拟单位 */
-    targetX = FluidDemo_MgToSim(FluidDemo_PickAxis(FLUID_IMU_AX_SRC, FLUID_IMU_AX_SIGN));
-    targetY = FluidDemo_MgToSim(FluidDemo_PickAxis(FLUID_IMU_AY_SRC, FLUID_IMU_AY_SIGN));
+    /* 选轴 + 符号。**这里不加死区** —— 死区只属于慢通路，见下 */
+    rawXmg = FluidDemo_PickAxis(FLUID_IMU_AX_SRC, FLUID_IMU_AX_SIGN);
+    rawYmg = FluidDemo_PickAxis(FLUID_IMU_AY_SRC, FLUID_IMU_AY_SIGN);
+
+    /* 慢通路的输入 = 死区之后的值（和改动前逐位一致）*/
+    slowInX = FluidDemo_MgToSim(FluidDemo_Deadband(rawXmg));
+    slowInY = FluidDemo_MgToSim(FluidDemo_Deadband(rawYmg));
 
     if (s_filtSeeded == 0u) {
-        /* 第一次：直接赋当前值，避免从 0 慢慢爬上去（开机时液体会乱冲一下）*/
-        s_axFilt = targetX;
-        s_ayFilt = targetY;
+        /* 第一次：慢通路直接赋当前值（避免从 0 慢慢爬上去，开机时液体乱冲一下）；
+         * 快通路清零 —— 此刻还没有"变化"，别把开机瞬间当成摇晃 */
+        s_axSlow = slowInX;
+        s_aySlow = slowInY;
+        s_sxFast = 0;
+        s_syFast = 0;
         s_filtSeeded = 1u;
     } else {
-        /* 一阶低通：y[n] = y[n-1] + α·(x[n] − y[n-1]) */
-        s_axFilt += _IQmpy(FLUID_IMU_LPF_ALPHA, targetX - s_axFilt);
-        s_ayFilt += _IQmpy(FLUID_IMU_LPF_ALPHA, targetY - s_ayFilt);
+        /* 慢通路：一阶低通 y[n] = y[n-1] + α·(x[n] − y[n-1]) */
+        s_axSlow += _IQmpy(FLUID_IMU_LPF_ALPHA, slowInX - s_axSlow);
+        s_aySlow += _IQmpy(FLUID_IMU_LPF_ALPHA, slowInY - s_aySlow);
+
+        /* 快通路：先高通（raw − 慢，把"变化量"挑出来），再低通吃噪声。
+         * 这里的"慢"是本帧刚更新过的值，所以 (raw − 慢) 天然就是高通的结果。
+         * ⚠ 高通用的是**未加死区的 raw**，这样信号压在 40mg 死区边界上时
+         *   （输入在 0 和 40mg 之间跳）不会在快通路里造出假摇晃。 */
+        s_sxFast += _IQmpy(FLUID_SHAKE_ALPHA,
+                           (FluidDemo_MgToSim(rawXmg) - s_axSlow) - s_sxFast);
+        s_syFast += _IQmpy(FLUID_SHAKE_ALPHA,
+                           (FluidDemo_MgToSim(rawYmg) - s_aySlow) - s_syFast);
     }
 
-    *ax = s_axFilt;
-    *ay = s_ayFilt;
+    /* 摇晃死区：平滑完还是小值的当 0（挡"倾斜态下的噪声"）。
+     * 这里清的是**状态**而不是只清输出，这样 dbg 里看到的 fast 就是"实际贡献了多少"，
+     * 静止时读数为 0 一目了然。 */
+    if (s_sxFast > -FLUID_SHAKE_DEADBAND && s_sxFast < FLUID_SHAKE_DEADBAND) {
+        s_sxFast = 0;
+    }
+    if (s_syFast > -FLUID_SHAKE_DEADBAND && s_syFast < FLUID_SHAKE_DEADBAND) {
+        s_syFast = 0;
+    }
+
+    /* 合成：重力 + 摇晃×增益，然后限幅（防磕碰尖峰）*/
+    totalX = s_axSlow + _IQmpy(FLUID_SHAKE_GAIN, s_sxFast);
+    totalY = s_aySlow + _IQmpy(FLUID_SHAKE_GAIN, s_syFast);
+
+    if (totalX > FLUID_ACC_CLAMP) {
+        totalX = FLUID_ACC_CLAMP;
+    } else if (totalX < -FLUID_ACC_CLAMP) {
+        totalX = -FLUID_ACC_CLAMP;
+    }
+    if (totalY > FLUID_ACC_CLAMP) {
+        totalY = FLUID_ACC_CLAMP;
+    } else if (totalY < -FLUID_ACC_CLAMP) {
+        totalY = -FLUID_ACC_CLAMP;
+    }
+
+    *ax = totalX;
+    *ay = totalY;
 }
 
 /* ==================== 渲染 ==================== */
@@ -307,6 +444,20 @@ static void FluidDemo_Push(void)
 {
     uint8_t x, y;
 
+    /* ---- 低电检查的"安静窗口"（每 BAT_CHECK_MS 一次）----
+     * LED 满载 360mA 会把电池读数压低 200~335mV（实测），所以必须先把屏熄掉
+     * 再采；否则一颗健康的 3.8V 电池会被读成 3.43V，直接误判低电关机。
+     *
+     * 用全局亮度 0x37 = 0 熄屏：一条命令立即生效，不清帧缓冲、也不等扫描走完，
+     * 采样后写回 MAX 就能原样恢复画面。
+     * 熄屏时长 ≈ BAT_SETTLE_MS + 一次采样(≈0.5ms) ≈ 1.5ms，肉眼不可见。 */
+    if (Battery_QuietBegin() != 0u) {
+        HT16D33A_SetBrightness(HT16D33A_BRIGHTNESS_OFF);
+        mspm0_delay_ms(BAT_SETTLE_MS);
+        Battery_QuietSample();                  /* 低电确认时这里可能直接关机（不返回）*/
+        HT16D33A_SetBrightness(HT16D33A_BRIGHTNESS_MAX);
+    }
+
     LedMatrix_Clear();
 
 #if FLUID_RENDER_DENSITY
@@ -404,6 +555,25 @@ static int32_t FluidDemo_SimX10(_iq v)
     return (int32_t) (((int64_t) v * 10) / IQ_ONE);
 }
 
+/* 窗口内摇晃分量（已含增益）的峰值 ×10，只给 dbg.fluid.shake_pk10 看。
+ * 没屏了，这是"摇晃到底有没有进来"最直观的一个数：静止 ≈ 0，摇起来几百。 */
+static uint32_t s_shakePk10;
+
+static void FluidDemo_TrackShakePeak(void)
+{
+    int32_t  fx = FluidDemo_SimX10(_IQmpy(FLUID_SHAKE_GAIN, s_sxFast));
+    int32_t  fy = FluidDemo_SimX10(_IQmpy(FLUID_SHAKE_GAIN, s_syFast));
+    uint32_t m  = (uint32_t) ((fx < 0) ? -fx : fx);
+    uint32_t my = (uint32_t) ((fy < 0) ? -fy : fy);
+
+    if (my > m) {
+        m = my;
+    }
+    if (m > s_shakePk10) {
+        s_shakePk10 = m;
+    }
+}
+
 /* ==================== 数学层自检 ==================== */
 
 /* 先确认 _IQmpy/_IQdiv/_IQsqrt 都是对的，再让仿真跑，免得白排查。
@@ -492,6 +662,26 @@ static uint8_t FluidDemo_IqSelfTest(void)
     return 1u;
 }
 
+/* ==================== 低电关机动作（动画接口的示范实现）====================
+ *
+ * battery.c 只负责"判断低电"，具体怎么收场交给这里。
+ * 现在 = **熄屏 → 立即关机**（用户要求"直接关机"，不播动画）。
+ *
+ * 以后要做"先播一段低电动画再关机"，把函数体换成：
+ *     LedShow_PlayLowBattery();     // 播完自动返回
+ *     Battery_ShutdownNow();
+ * 即可，其它地方一行都不用改（接口见 battery.h）。
+ *
+ * ⚠ 熄屏这一步不能省：电源自锁释放后，整机还要靠保持电容撑一小会儿，
+ *   不熄屏的话最后那一帧会冻在屏上。 */
+static void FluidDemo_LowBatteryAction(void)
+{
+    LedMatrix_Clear();
+    LedMatrix_Flush();              /* 立即熄屏（约 1.2ms）*/
+
+    Battery_ShutdownNow();          /* 释放电源自锁；不返回 */
+}
+
 /* ==================== 入口 ==================== */
 
 void FluidDemo_Run(void)
@@ -509,6 +699,9 @@ void FluidDemo_Run(void)
     uint32_t t0, t1;
 
     LedMatrix_Init();                       /* 芯片初始化 + 清屏 */
+
+    /* 注册低电关机动作（熄屏 + 关机）。不注册则默认直接关机、不熄屏。 */
+    Battery_SetLowAction(FluidDemo_LowBatteryAction);
 
     /* 数学层自检：坏了就把整屏点亮停住（还能长按 USER1 关机）*/
     dbg.fluid.iq_ok = FluidDemo_IqSelfTest();
@@ -559,8 +752,11 @@ void FluidDemo_Run(void)
 
     /* 滤波器复位：第一次读 IMU 时会用当时的读数播种（见 FluidDemo_ReadGravity），
      * 这样开机瞬间液体就朝真实重力方向，不会先"自由落体"一下 */
-    s_axFilt  = 0;
-    s_ayFilt  = 0;
+    s_axSlow     = 0;
+    s_aySlow     = 0;
+    s_sxFast     = 0;
+    s_syFast     = 0;
+    s_shakePk10  = 0u;
     s_filtSeeded = 0u;
 
 #if HT16D33A_USE_BINARY_MODE
@@ -586,9 +782,15 @@ void FluidDemo_Run(void)
          * 这里只需要停下来别再干活，安静等硬件断电 */
         PowerKey_CheckShutdown();
 
+        /* 低电检查调度：每 BAT_CHECK_MS 置一次"该熄屏采样了"。
+         * 真正的采样在 FluidDemo_Push() 的安静窗口里做（见那里的注释），
+         * 低电确认后会在那里直接关机。 */
+        Battery_Task();
+
         if (useImu != 0u) {
-            /* ---- 真实重力：读 IMU → 选轴/符号/死区/低通 ---- */
+            /* ---- 真实 IMU：读 → 选轴/符号/死区 → 双通路分解（重力 + 摇晃）---- */
             FluidDemo_ReadGravity(&ax, &ay);
+            FluidDemo_TrackShakePeak();     /* 仅供 dbg.fluid.shake_pk10 观测 */
         } else {
             /* ---- 假重力：每 DEMO_TILT_MS 换一个方向（IMU 不可用时的退路）---- */
             if ((uint32_t) (tick_ms - tiltStart) >= DEMO_TILT_MS) {
@@ -620,6 +822,16 @@ void FluidDemo_Run(void)
             dbg.fluid.frames     = Fluid_GetFrameCount();
             dbg.fluid.ax10       = FluidDemo_SimX10(ax);
             dbg.fluid.ay10       = FluidDemo_SimX10(ay);
+
+            /* 双通路分解的观测值（原理见文件顶部《重力 / 摇晃：双通路分解》）
+             * 静止时应为：slow ≈ ±98（1g 向下）、fast ≈ 0；
+             * 左右摇时 fast 大幅摆动、slow 基本不动。 */
+            dbg.fluid.ax_slow10  = FluidDemo_SimX10(s_axSlow);
+            dbg.fluid.ay_slow10  = FluidDemo_SimX10(s_aySlow);
+            dbg.fluid.ax_fast10  = FluidDemo_SimX10(_IQmpy(FLUID_SHAKE_GAIN, s_sxFast));
+            dbg.fluid.ay_fast10  = FluidDemo_SimX10(_IQmpy(FLUID_SHAKE_GAIN, s_syFast));
+            dbg.fluid.shake_pk10 = s_shakePk10;
+            s_shakePk10 = 0u;       /* 窗口量：发布完清零重算 */
 
             accSim   = 0u;
             frameCnt = 0u;

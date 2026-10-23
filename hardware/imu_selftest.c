@@ -18,6 +18,7 @@
 #include "ti_msp_dl_config.h"
 #include "clock.h"
 #include "debug.h"
+#include "battery.h"
 #include "lsm6ds3trc.h"
 #include "power.h"
 #include "imu_selftest.h"
@@ -41,6 +42,11 @@ void ImuSelfTest_Run(void)
         /* 一键开关机：USER1 长按 2s 后由 TIMA0 中断把 PA22 拉低，
          * 这里只负责"别再干活了"，安静等断电（否则关机后还在跑采样没意义）。 */
         PowerKey_CheckShutdown();
+
+        /* 低电检查调度。
+         * ⚠ 本模式没有实现"熄屏采样窗口"，所以低电保护在这里不会触发
+         *   （调试模式，生产跑的是流体模式）。 */
+        Battery_Task();
 
         if ((int32_t)(tick_ms - nextPublish) >= 0) {
             DBG_PerfPublish();

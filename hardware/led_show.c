@@ -12,6 +12,7 @@
 #include "ti_msp_dl_config.h"
 #include "clock.h"
 #include "debug.h"
+#include "battery.h"
 #include "power.h"
 #include "key.h"
 #include "led_matrix.h"
@@ -90,6 +91,11 @@ void LedShow_Run(void)
 
     for (;;) {
         LedShow_Task();                 /* 推进段落 + 刷屏 */
+
+        /* 低电检查调度。
+         * ⚠ 本模式没有实现"熄屏采样窗口"，所以低电保护在这里不会触发；
+         *   它是调试模式，生产跑的是流体模式（见 fluid_demo.c）。 */
+        Battery_Task();
 
         /* 一键开关机：长按 USER1 后由 TIMA0 中断拉低 PA22，这里只负责停下来 */
         PowerKey_CheckShutdown();

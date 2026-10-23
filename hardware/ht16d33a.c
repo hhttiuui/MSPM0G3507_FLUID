@@ -187,6 +187,14 @@ void HT16D33A_WriteOnOff(uint8_t pattern)
     Frame(HT16D33A_CMD_WRITE_LED_ONOFF, buf, (uint16_t) (HT16D33A_ONOFF_BYTES + 1u));
 }
 
+/* 全局亮度（0x37 的 BC7..0）。0 = 全灭，0xFF = 最亮。
+ * 低电检查的"熄屏窗口"用它：立即生效、不动显示 RAM，写完再设回 MAX
+ * 就能原样恢复画面（不需要重画一帧）。 */
+void HT16D33A_SetBrightness(uint8_t level)
+{
+    HT16D33A_WriteCmd(HT16D33A_CMD_SET_BRIGHTNESS, level);
+}
+
 /* ==================== 初始化 ==================== */
 
 uint8_t HT16D33A_Init(void)
@@ -208,7 +216,7 @@ uint8_t HT16D33A_Init(void)
     HT16D33A_WriteCmd(HT16D33A_CMD_CONFIG_MODE, HT16D33A_MODE_VALUE);
 
     HT16D33A_WriteCmd(HT16D33A_CMD_SET_CURRENT, HT16D33A_CURRENT_24MA); /* 恒流半档 24mA */
-    HT16D33A_WriteCmd(HT16D33A_CMD_SET_BRIGHTNESS, 0xFFu);              /* 全局亮度拉满 */
+    HT16D33A_WriteCmd(HT16D33A_CMD_SET_BRIGHTNESS, HT16D33A_BRIGHTNESS_MAX); /* 全局亮度拉满 */
     HT16D33A_WriteCmd(HT16D33A_CMD_SET_V_BLANK, 0x8Fu);                 /* VBEN=1, VB=15 */
     HT16D33A_WriteCmd(HT16D33A_CMD_SYS_CONTROL, HT16D33A_SYS_OSC_ON);
 

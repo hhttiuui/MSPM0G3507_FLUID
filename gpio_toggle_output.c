@@ -1,8 +1,8 @@
 /*
  * MSPM0G3507 流体模拟 + LED 点阵显示
  *
- * 主循环在 hardware/fluid_demo.c：假重力 → 流体模拟一步 → 映射层 → LED 点阵推屏。
- *   ⚠ 暂时**不接 IMU**，用"假重力"（方向每 2s 换一次）驱动，详见 fluid_demo.c。
+ * 主循环在 hardware/fluid_demo.c：IMU 重力 → 流体模拟一步 → 映射层 → LED 点阵推屏。
+ *   IMU 初始化失败会自动退回"假重力"（方向每 2s 换一次），详见 fluid_demo.c。
  *   ⚠ 想看 LED 点阵的综合演示（全亮→全黑→游走→图案），把 led_show.h 的
  *     LED_SHOW_ENABLE 置 1 即可，那个分支优先级更高。
  * 启动链、时钟节拍（SysTick）、5ms 按键节拍（TIMER_0 中断）和处理函数在本文件。
@@ -23,10 +23,10 @@
  *          → led_show.c / fluid_demo.c（应用）。
  * IMU：SPI1，SCLK=PA17 / PICO=PA18 / POCI=PA16，CS=PA15（本板是 LSM6DS3TR-C，
  *      WHO_AM_I=0x6A；驱动见 hardware/lsm6ds3trc.c。注意 hardware/IMU660RB/
- *      那套是给 LSM6DSR(0x6B) 的，两者不能混用）。**当前流体还没接它。**
+ *      那套是给 LSM6DSR(0x6B) 的，两者不能混用，本工程不引用它）。
  *
  * 电池采样（`BAT_ADC` = ADC0 通道 0 = PA27）：驱动在 hardware/battery.c
- *         板上分压：VBAT ─100kΩ─┬─100kΩ─ GND，中间抽头接 PA27（比值 2:1）。
+ *         板上分压：VBAT ─10kΩ─┬─10kΩ─ GND，中间抽头接 PA27（比值 2:1）。
  *         ⚠️ ADC 的「通道」和「引脚」是绑死的——换引脚必须同时换通道。
  *         本工程就是从 ADC1/CH4/PB17 改成 ADC0/CH0/PA27，为的是腾出 PB17。
  * 电源保持 + 一键开关机（`GPIO_PWR` / `PIN_PWR_HOLD` = PA22）：
@@ -126,8 +126,13 @@ int main(void)
      */
     SYSCFG_DL_init();           /* 外设初始化（UART_0 / TIMER_0 / I2C_OLED / SPI_LSM6DS3TRC /
                                    SPI_LED_DRV / BAT_ADC）+ 电源自锁 PA22 */
-    Battery_Init();             /* 使能 BAT_ADC(ADC0) 中断，供 Battery_ReadMilliVolt() 按需采样 */
+    Battery_Init();             /* 使能 BAT_ADC(ADC0) 中断；采样策略见 battery.h */
     SysTick_Init();             /* tick_ms 1ms 节拍，各模块的计时基准 */
+
+    /* 电池：**趁 LED 还没点亮**先阻塞读一次。
+     * 这是唯一"空载"的测量时机（点亮后读数会被抬高达 268 mV），结果写进
+     * dbg.bat，供校准分压比 / VDDA 用。运行期由 Battery_Task() 定期刷新。 */
+    (void) Battery_ReadMilliVolt();
 
     /* 按键取当前电平做初值：一键开关机就是"按着键上电"的，此刻 USER1 已经是低，
      * 初值必须取真实电平，否则去抖器会在 20ms 后把这次开机当成一次"新按下"。 */
