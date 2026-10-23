@@ -60,6 +60,8 @@
 #include "ht16d33a.h"       /* 渲染要按 HT16D33A_USE_BINARY_MODE 分支（灰度 or 二进制）*/
 #include "lsm6ds3trc.h"
 #include "power.h"
+#include "vcmd.h"           /* 串口下行命令：DMA RX + 文本解析 */
+#include "vofa.h"           /* 串口上行遥测：FireWater + DMA TX */
 
 /* ==================== 配置 ==================== */
 
@@ -191,6 +193,17 @@
 /* 加速度计 1g 对应的 mg 值（换算成模拟单位 9.8 用）*/
 #define DEMO_MG_PER_G       1000
 
+/* ---- 运行期可调状态（串口命令改这些，见 FluidDemo_CmdTask）----
+ * 上面那些 *_GAIN / DEMO_* 宏是"默认值"，这里才是真正生效的变量。
+ * 为什么不直接用宏：串口调参的价值就在于不改代码、不重编译。 */
+static _iq      s_shakeGain = FLUID_SHAKE_GAIN;   /* shake <n×100> 改 */
+static uint8_t  s_paused;                         /* pause 1 = 冻结物理 */
+static uint8_t  s_dispLock;                       /* lock  1 = 冻结流体渲染 */
+
+/* 用户设定的全局亮度（0x37）。低电安静窗口熄屏采样后要恢复成**这个值**，
+ * 不能写死 MAX —— 否则串口把 bc 调到 64，每 2 秒就被安静窗口打回 255。 */
+static uint8_t  s_userBc = HT16D33A_BRIGHTNESS_MAX;
+
 /* 假重力的 4 个方向（模拟单位）。约定：x 正 = 屏幕右，y 正 = 屏幕下 */
 static const _iq s_tiltAcc[4][2] = {
     { _IQ(0.0f),  _IQ(9.8f) },      /* 0 下 */
@@ -306,8 +319,8 @@ static void FluidDemo_ReadGravity(_iq *ax, _iq *ay)
     }
 
     /* 合成：重力 + 摇晃×增益，然后限幅（防磕碰尖峰）*/
-    totalX = s_axSlow + _IQmpy(FLUID_SHAKE_GAIN, s_sxFast);
-    totalY = s_aySlow + _IQmpy(FLUID_SHAKE_GAIN, s_syFast);
+    totalX = s_axSlow + _IQmpy(s_shakeGain, s_sxFast);
+    totalY = s_aySlow + _IQmpy(s_shakeGain, s_syFast);
 
     if (totalX > FLUID_ACC_CLAMP) {
         totalX = FLUID_ACC_CLAMP;
@@ -455,7 +468,16 @@ static void FluidDemo_Push(void)
         HT16D33A_SetBrightness(HT16D33A_BRIGHTNESS_OFF);
         mspm0_delay_ms(BAT_SETTLE_MS);
         Battery_QuietSample();                  /* 低电确认时这里可能直接关机（不返回）*/
-        HT16D33A_SetBrightness(HT16D33A_BRIGHTNESS_MAX);
+        HT16D33A_SetBrightness(s_userBc);       /* 恢复用户设定的亮度，不是写死 MAX */
+    }
+
+    /* ---- 显示锁：串口 `lock 1` 之后流体不再改画面 ----
+     * 用途是亮度标定 —— 需要一块**完全静止**的画面才能稳定读数。
+     * 冻结的是"重建帧 + 推屏"这两步，芯片显示 RAM 里的内容会一直保持
+     * （HT16D33A 自带扫描，不需要 MCU 持续刷新）。
+     * 低电安静窗口仍然照跑（在上面），所以锁着的时候电池保护依然有效。 */
+    if (s_dispLock != 0u) {
+        return;
     }
 
     LedMatrix_Clear();
@@ -561,8 +583,8 @@ static uint32_t s_shakePk10;
 
 static void FluidDemo_TrackShakePeak(void)
 {
-    int32_t  fx = FluidDemo_SimX10(_IQmpy(FLUID_SHAKE_GAIN, s_sxFast));
-    int32_t  fy = FluidDemo_SimX10(_IQmpy(FLUID_SHAKE_GAIN, s_syFast));
+    int32_t  fx = FluidDemo_SimX10(_IQmpy(s_shakeGain, s_sxFast));
+    int32_t  fy = FluidDemo_SimX10(_IQmpy(s_shakeGain, s_syFast));
     uint32_t m  = (uint32_t) ((fx < 0) ? -fx : fx);
     uint32_t my = (uint32_t) ((fy < 0) ? -fy : fy);
 
@@ -684,6 +706,188 @@ static void FluidDemo_LowBatteryAction(void)
 
 /* ==================== 入口 ==================== */
 
+/* ==================== 串口命令执行 ====================
+ *
+ * vcmd.c 只负责把文本翻译成"命令号 + 4 个参数"投进 dbg.cmd 邮箱；
+ * 真正的动作在这里、在主循环的固定位置执行。这样命令生效的时机可预测，
+ * 不会在 SPI 推屏中途改显示状态。
+ *
+ * 命令号见 debug.h 的 DBG_CMD_*，别名见 vcmd.c 的 s_alias[]。
+ * 执行结果写 dbg.cmd.result：1 = 成功，2 = 参数越界，3 = 未知命令。
+ */
+
+/* 画 14 级亮度阶梯（第 2~15 行每行一个亮度），外框全亮。
+ * 亮度标定时拿它当标尺：每一行就是一个已知的 DDRAM 值，
+ * 用探头逐行读就能得到 DDRAM → 实际光输出的曲线。 */
+static void FluidDemo_DrawRamp(void)
+{
+    uint8_t x, y;
+
+    LedMatrix_Clear();
+
+    for (y = 2u; y <= (uint8_t) (LED_APP_ROWS - 1u); y++) {
+        uint8_t lv = (uint8_t) (((uint32_t) (y - 2u) * 255u)
+                                / (uint32_t) (LED_APP_ROWS - 3u));
+
+        for (x = 1u; x <= LED_APP_COLS; x++) {
+            LedMatrix_SetCellLevel(x, y, lv);
+        }
+    }
+
+    /* 外框全亮，这样 16 列 / 16 行全都画到 */
+    for (x = 1u; x <= LED_APP_COLS; x++) {
+        LedMatrix_SetCellLevel(x, 1u, 255u);
+        LedMatrix_SetCellLevel(x, (uint8_t) LED_APP_ROWS, 255u);
+    }
+    for (y = 1u; y <= LED_APP_ROWS; y++) {
+        LedMatrix_SetCellLevel(1u, y, 255u);
+        LedMatrix_SetCellLevel((uint8_t) LED_APP_COLS, y, 255u);
+    }
+
+    LedMatrix_Flush();
+}
+
+static void FluidDemo_CmdTask(void)
+{
+    uint16_t id;
+    int32_t  a0, a1, a2;
+
+    if (dbg.cmd.pending == 0u) {
+        return;
+    }
+
+    id = dbg.cmd.id;
+    a0 = dbg.cmd.arg[0];
+    a1 = dbg.cmd.arg[1];
+    a2 = dbg.cmd.arg[2];
+
+    dbg.cmd.pending = 0u;
+    dbg.cmd.result  = 1u;
+
+    switch (id) {
+        /* ---------------- 系统 ---------------- */
+        case DBG_CMD_SET_DIV:
+            VOFA_SetDivShift((uint32_t) a0);
+            break;
+
+        case DBG_CMD_SET_MASK:
+            VOFA_SetMask((uint32_t) a0);
+            break;
+
+        case DBG_CMD_RESET_STATS:
+            dbg.uart.rx_bytes  = 0u;
+            dbg.uart.cmds      = 0u;
+            dbg.uart.bad       = 0u;
+            dbg.uart.tx_frames = 0u;
+            dbg.uart.tx_drops  = 0u;
+            dbg.uart.tx_stuck  = 0u;
+            break;
+
+        /* ---------------- 流体 ---------------- */
+        case DBG_CMD_FLUID_SET_DT:
+            /* 参数是 dt × 1e5（3200 = 0.032 s）。整数换算成 Q24，不引入浮点。 */
+            if ((a0 >= 100) && (a0 <= 10000)) {
+                Fluid_SetDt((_iq) (((int64_t) a0 << IQ_SHIFT) / 100000));
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
+        case DBG_CMD_FLUID_SET_ITER:
+            if ((a0 >= 0) && (a0 <= 32)) {
+                Fluid_SetGridIter((uint32_t) a0);
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
+        case DBG_CMD_FLUID_SET_SHAKE:
+            /* 参数是增益 ×100（150 = 1.5） */
+            if ((a0 >= 0) && (a0 <= 1000)) {
+                s_shakeGain = (_iq) (((int64_t) a0 * IQ_ONE) / 100);
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
+        case DBG_CMD_FLUID_PAUSE:
+            s_paused = (a0 != 0) ? 1u : 0u;
+            break;
+
+        case DBG_CMD_FLUID_REINIT:
+            Fluid_Init();
+            break;
+
+        /* ---------------- LED 点阵（亮度标定） ----------------
+         * ⚠ 画静态画面的三条命令（fill / off / px / ramp）都会**自动置
+         *   s_dispLock**：不锁的话下一帧就被流体覆盖了，根本来不及测。 */
+        case DBG_CMD_LED_SET_BC:
+            if ((a0 >= 0) && (a0 <= 255)) {
+                s_userBc = (uint8_t) a0;
+                HT16D33A_SetBrightness(s_userBc);
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
+        case DBG_CMD_LED_SET_CC:
+            if ((a0 >= 0) && (a0 <= 15)) {
+                HT16D33A_WriteCmd(HT16D33A_CMD_SET_CURRENT, (uint8_t) a0);
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
+        case DBG_CMD_LED_FILL:
+            if ((a0 >= 0) && (a0 <= 255)) {
+                uint8_t x, y;
+
+                s_dispLock = 1u;
+                LedMatrix_Clear();
+                for (x = 1u; x <= LED_APP_COLS; x++) {
+                    for (y = 1u; y <= LED_APP_ROWS; y++) {
+                        LedMatrix_SetCellLevel(x, y, (uint8_t) a0);
+                    }
+                }
+                LedMatrix_Flush();
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
+        case DBG_CMD_LED_OFF:
+            s_dispLock = 1u;
+            LedMatrix_Clear();
+            LedMatrix_Flush();
+            break;
+
+        case DBG_CMD_LED_PX:
+            if ((a0 >= 1) && (a0 <= (int32_t) LED_APP_COLS) &&
+                (a1 >= 1) && (a1 <= (int32_t) LED_APP_ROWS) &&
+                (a2 >= 0) && (a2 <= 255)) {
+                s_dispLock = 1u;
+                LedMatrix_SetCellLevel((uint8_t) a0, (uint8_t) a1, (uint8_t) a2);
+                LedMatrix_Flush();
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
+        case DBG_CMD_LED_RAMP:
+            s_dispLock = 1u;
+            FluidDemo_DrawRamp();
+            break;
+
+        case DBG_CMD_LED_LOCK:
+            s_dispLock = (a0 != 0) ? 1u : 0u;
+            break;
+
+        default:
+            dbg.cmd.result = 3u;
+            break;
+    }
+}
+
 void FluidDemo_Run(void)
 {
 #if FLUID_USE_IMU
@@ -698,6 +902,12 @@ void FluidDemo_Run(void)
     _iq      ax = 0, ay = 0;
     uint32_t t0, t1;
 
+    /* ---- 串口调试通道：**第一个初始化** ----
+     * 后面任何一步失败（数学层自检、IMU、LED 芯片）都还能靠串口把原因报出来，
+     * 比"整屏点亮当报错信号"有用得多。 */
+    VCMD_Init();                            /* 武装 RX DMA */
+    VOFA_Init();                            /* 遥测默认关闭，发 div 1 才开 */
+
     LedMatrix_Init();                       /* 芯片初始化 + 清屏 */
 
     /* 注册低电关机动作（熄屏 + 关机）。不注册则默认直接关机、不熄屏。 */
@@ -710,6 +920,8 @@ void FluidDemo_Run(void)
         LedMatrix_Flush();
         for (;;) {
             PowerKey_CheckShutdown();
+            VCMD_Tick();                    /* 至少还能从串口看到 rx_bytes / last_id */
+            VOFA_Tick();
             __WFI();
         }
     }
@@ -787,6 +999,12 @@ void FluidDemo_Run(void)
          * 低电确认后会在那里直接关机。 */
         Battery_Task();
 
+        /* ---- 串口：收命令（不阻塞，没数据时只读两个寄存器）---- */
+        VCMD_Tick();
+
+        /* ---- 执行命令：固定在这里生效，不会在推屏中途改显示状态 ---- */
+        FluidDemo_CmdTask();
+
         if (useImu != 0u) {
             /* ---- 真实 IMU：读 → 选轴/符号/死区 → 双通路分解（重力 + 摇晃）---- */
             FluidDemo_ReadGravity(&ax, &ay);
@@ -803,14 +1021,19 @@ void FluidDemo_Run(void)
             ay = s_tiltAcc[tilt][1];
         }
 
-        /* ---- 物理一步 ---- */
-        t0 = tick_ms;
-        Fluid_Step(ax, ay);
-        t1 = tick_ms;
-        accSim += (t1 - t0);
+        /* ---- 物理一步（`pause 1` 之后冻结，方便静态观察 / 测量）---- */
+        if (s_paused == 0u) {
+            t0 = tick_ms;
+            Fluid_Step(ax, ay);
+            t1 = tick_ms;
+            accSim += (t1 - t0);
+        }
 
         /* ---- 渲染 + 推屏（不计入物理耗时）---- */
         FluidDemo_Push();
+
+        /* ---- 串口：发遥测（DMA 忙就丢帧，绝不等待）---- */
+        VOFA_Tick();
 
         /* ---- 每 DEMO_STAT_FRAMES 帧统计一次（原来这些数在 OLED 的 HUD 上）---- */
         frameCnt++;
@@ -828,8 +1051,8 @@ void FluidDemo_Run(void)
              * 左右摇时 fast 大幅摆动、slow 基本不动。 */
             dbg.fluid.ax_slow10  = FluidDemo_SimX10(s_axSlow);
             dbg.fluid.ay_slow10  = FluidDemo_SimX10(s_aySlow);
-            dbg.fluid.ax_fast10  = FluidDemo_SimX10(_IQmpy(FLUID_SHAKE_GAIN, s_sxFast));
-            dbg.fluid.ay_fast10  = FluidDemo_SimX10(_IQmpy(FLUID_SHAKE_GAIN, s_syFast));
+            dbg.fluid.ax_fast10  = FluidDemo_SimX10(_IQmpy(s_shakeGain, s_sxFast));
+            dbg.fluid.ay_fast10  = FluidDemo_SimX10(_IQmpy(s_shakeGain, s_syFast));
             dbg.fluid.shake_pk10 = s_shakePk10;
             s_shakePk10 = 0u;       /* 窗口量：发布完清零重算 */
 

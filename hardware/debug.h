@@ -266,6 +266,65 @@ typedef struct {
     uint8_t  shutdown;  /* 1 = 已触发低电关机 */
 } dbg_bat_t;
 
+/* ---- 串口调试通道（实现见 hardware/vcmd.c 与 hardware/vofa.c）----
+ * 下行：UART1 RX → DMA_CH0 → s_rx[64] → 文本命令 → dbg.cmd 邮箱
+ * 上行：dbg → FireWater 文本帧 → DMA_CH1 → UART1 TX
+ *
+ * 判读顺序：
+ *   rx_bytes 不涨        → 没接上 / TX-RX 接反 / 引脚错 / DMA 没武装
+ *   rx_bytes 涨但 cmds 不涨 → 收到了但解析不了：看换行符是不是 '\n' 或 '\r'、
+ *                            命令号是否在 DBG_CMD_* 里、行是否超过 31 字节
+ *   bad 在涨            → 解析失败（超长行 / 非法命令号）
+ *   tx_drops 持续涨      → DMA 忙不过来：加大分频（div）或减少通道（mask）
+ *   tx_stuck 非 0        → TX DMA 卡过，被看门狗强制释放（正常应为 0）
+ *   last_id              → 最近一条命令号，用来确认"有没有收到东西" */
+typedef struct {
+    uint32_t rx_bytes;   /* RX DMA 累计收到的字节数 */
+    uint32_t cmds;       /* 成功解析并提交的命令数 */
+    uint32_t bad;        /* 解析失败数 */
+    uint32_t tx_frames;  /* 遥测已发出的帧数 */
+    uint32_t tx_drops;   /* 因 DMA 忙而丢掉的帧 */
+    uint32_t tx_stuck;   /* TX DMA 看门狗复位次数 */
+    uint16_t last_id;    /* 最近一条命令号 */
+    uint8_t  div_shift;  /* 遥测分频：0 = 关，n = 每 2^n 帧发一帧 */
+    uint16_t mask;       /* 遥测通道掩码 */
+} dbg_uart_t;
+
+/* ---- 命令邮箱：串口只负责"翻译 + 投递"，执行在主循环的固定位置 ----
+ * 这么分层是为了让命令生效的时机可预测 —— 不会在 SPI 推屏中途改显示状态。
+ * ⚠ 只有一个槽位：同一拍里连投两条，前一条会被覆盖。所以 VCMD_Tick()
+ *   一拍最多执行一条命令。 */
+typedef struct {
+    uint16_t id;
+    int32_t  arg[4];
+    uint8_t  pending;    /* 1 = 有待执行的命令 */
+    uint8_t  result;     /* 0=未执行 1=成功 2=参数越界 3=未知命令 */
+} dbg_cmd_t;
+
+/* ==================== 命令号 ====================
+ * 编码规则：高字节 = 模块，低字节 = 功能。别名表见 vcmd.c。 */
+
+/* ---- 系统 ---- */
+#define DBG_CMD_SET_DIV             0x0001u  /* arg[0]: 0=关，n=每 2^n 帧一帧遥测 */
+#define DBG_CMD_SET_MASK            0x0002u  /* arg[0]: 通道掩码 bit0~15 */
+#define DBG_CMD_RESET_STATS         0x0003u  /* 清零 dbg.uart 的统计 */
+
+/* ---- 流体 ---- */
+#define DBG_CMD_FLUID_SET_DT        0x0101u  /* arg[0]: dt × 1e5（3200 = 0.032s）*/
+#define DBG_CMD_FLUID_SET_ITER      0x0102u  /* arg[0]: 压力迭代次数 0~32 */
+#define DBG_CMD_FLUID_SET_SHAKE     0x0103u  /* arg[0]: 摇晃增益 ×100（150 = 1.5）*/
+#define DBG_CMD_FLUID_PAUSE         0x0104u  /* arg[0]: 1=暂停物理，0=继续 */
+#define DBG_CMD_FLUID_REINIT        0x0105u  /* 重新初始化粒子（液体归位）*/
+
+/* ---- LED 点阵（亮度标定用）---- */
+#define DBG_CMD_LED_SET_BC          0x0201u  /* arg[0]: 全局亮度 0~255（0x37）*/
+#define DBG_CMD_LED_SET_CC          0x0202u  /* arg[0]: 恒流档 0~15（0x36）*/
+#define DBG_CMD_LED_FILL            0x0203u  /* arg[0]: 整屏亮度 0~255 */
+#define DBG_CMD_LED_OFF             0x0204u  /* 全灭 */
+#define DBG_CMD_LED_PX              0x0205u  /* arg[0]=x arg[1]=y arg[2]=lv */
+#define DBG_CMD_LED_RAMP            0x0206u  /* 画 14 级亮度阶梯（标定用）*/
+#define DBG_CMD_LED_LOCK            0x0207u  /* arg[0]: 1=冻结流体渲染 */
+
 typedef struct {
     dbg_who_t   who;
     dbg_spi_t   spi;
@@ -278,6 +337,8 @@ typedef struct {
     dbg_led_t   led;
     dbg_fluid_t fluid;
     dbg_bat_t   bat;
+    dbg_uart_t  uart;
+    dbg_cmd_t   cmd;
     dbg_fault_t fault;
     dbg_test_t  test;
 } dbg_t;
@@ -328,5 +389,9 @@ void DBG_PerfPublish(void);
 /* 故障现场捕获（实现在 debug.c）。只由 HardFault_Handler 通过汇编跳转进来；
  * 普通代码不要调用 —— 它不会返回。 */
 void FaultCapture(uint32_t *sp);
+
+/* 投递一条命令到 dbg.cmd 邮箱（实现在 debug.c）。由 vcmd.c 调用；
+ * 也可以在调试器的 Expressions 里直接调，用来验证命令处理链路。 */
+void DBG_CmdSubmit(uint16_t id, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 
 #endif /* DEBUG_H */

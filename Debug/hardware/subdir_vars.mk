@@ -17,7 +17,9 @@ C_SRCS += \
 ../hardware/led_matrix.c \
 ../hardware/led_show.c \
 ../hardware/lsm6ds3trc.c \
-../hardware/power.c 
+../hardware/power.c \
+../hardware/vcmd.c \
+../hardware/vofa.c 
 
 C_DEPS += \
 ./hardware/battery.d \
@@ -31,7 +33,9 @@ C_DEPS += \
 ./hardware/led_matrix.d \
 ./hardware/led_show.d \
 ./hardware/lsm6ds3trc.d \
-./hardware/power.d 
+./hardware/power.d \
+./hardware/vcmd.d \
+./hardware/vofa.d 
 
 OBJS += \
 ./hardware/battery.o \
@@ -45,7 +49,9 @@ OBJS += \
 ./hardware/led_matrix.o \
 ./hardware/led_show.o \
 ./hardware/lsm6ds3trc.o \
-./hardware/power.o 
+./hardware/power.o \
+./hardware/vcmd.o \
+./hardware/vofa.o 
 
 OBJS__QUOTED += \
 "hardware\battery.o" \
@@ -59,7 +65,9 @@ OBJS__QUOTED += \
 "hardware\led_matrix.o" \
 "hardware\led_show.o" \
 "hardware\lsm6ds3trc.o" \
-"hardware\power.o" 
+"hardware\power.o" \
+"hardware\vcmd.o" \
+"hardware\vofa.o" 
 
 C_DEPS__QUOTED += \
 "hardware\battery.d" \
@@ -73,7 +81,9 @@ C_DEPS__QUOTED += \
 "hardware\led_matrix.d" \
 "hardware\led_show.d" \
 "hardware\lsm6ds3trc.d" \
-"hardware\power.d" 
+"hardware\power.d" \
+"hardware\vcmd.d" \
+"hardware\vofa.d" 
 
 C_SRCS__QUOTED += \
 "../hardware/battery.c" \
@@ -87,6 +97,8 @@ C_SRCS__QUOTED += \
 "../hardware/led_matrix.c" \
 "../hardware/led_show.c" \
 "../hardware/lsm6ds3trc.c" \
-"../hardware/power.c" 
+"../hardware/power.c" \
+"../hardware/vcmd.c" \
+"../hardware/vofa.c" 
 
 

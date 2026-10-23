@@ -76,6 +76,26 @@ void FaultCapture(uint32_t *sp)
     }
 }
 
+/* ==================== 命令邮箱 ====================
+ *
+ * 串口（vcmd.c）和调试器都只负责"投递"，真正执行在主循环里
+ * （fluid_demo.c 的 FluidDemo_CmdTask）。这样命令生效的时机是固定的，
+ * 不会在 SPI 推屏中途改显示状态。
+ *
+ * ⚠ 顺序不能改：arg 先写、id 次之、pending 最后置位才算"提交完成"。
+ *   中间任何一拍主循环看到 pending = 0 就什么都不做，是安全的。 */
+void DBG_CmdSubmit(uint16_t id, int32_t a0, int32_t a1, int32_t a2, int32_t a3)
+{
+    dbg.cmd.arg[0]  = a0;
+    dbg.cmd.arg[1]  = a1;
+    dbg.cmd.arg[2]  = a2;
+    dbg.cmd.arg[3]  = a3;
+    dbg.cmd.id      = id;
+    dbg.cmd.pending = 1u;
+
+    dbg.uart.last_id = id;
+}
+
 __attribute__((naked)) void HardFault_Handler(void)
 {
     __asm volatile (

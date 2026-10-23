@@ -8,10 +8,11 @@
  * 启动链、时钟节拍（SysTick）、5ms 按键节拍（TIMER_0 中断）和处理函数在本文件。
  *
  * 保留的预留资源（当前不参与流体显示，但初始化完整保留）：
- *   UART_0 = UART1 (PB6=TX / PB7=RX) 中断已配好，收到字节直接丢弃
+ *   UART_0 = UART1 (PB6=TX / PB7=RX)，**走 DMA 不用中断**：
+ *             RX = DMA_CH0（收命令，见 hardware/vcmd.c）
+ *             TX = DMA_CH1（发遥测，见 hardware/vofa.c）
  *   TIMER_0 = TIMA0，**5ms 周期**，NVIC 已使能 —— 每拍跑 Key_Task() +
  *             PowerKey_Task()（3 路按键扫描 + 一键开关机），见本文件的处理函数。
- *   UART_0 的 NVIC 使能仍是**关闭**的（想用在这里加 NVIC_EnableIRQ）。
  *
  * OLED（SSD1306，I2C1：SCL=PB2 / SDA=PB3）：**整套驱动已删除**
  *         （后续显示只用 LED）。syscfg 里的 I2C_OLED 实例还留着没动，
@@ -86,18 +87,10 @@ void TIMER_0_INST_IRQHandler(void)
     }
 }
 
-/* UART_0（UART1，PB7=RX / PB6=TX）接收中断。当前把收到的字节丢弃。 */
-void UART_0_INST_IRQHandler(void)
-{
-    switch (DL_UART_Main_getPendingInterrupt(UART_0_INST)) {
-        case DL_UART_MAIN_IIDX_RX:
-            (void)DL_UART_Main_receiveData(UART_0_INST);
-            break;
-
-        default:
-            break;
-    }
-}
+/* 注意：UART_0（UART1，PB7=RX / PB6=TX）**没有接收中断处理函数**。
+ * 收字节由 DMA_CH0 直接搬进 RAM，主循环轮询，见 hardware/vcmd.c。
+ * 外设侧的 RX 中断已经在 .syscfg 里关掉（enabledInterrupts 被移除），
+ * 所以这里的空 ISR 也一并删了 —— 留着只会让人误以为还在走中断。 */
 
 /* ==================== 初始化与主循环 ==================== */
 
@@ -110,9 +103,8 @@ void UART_0_INST_IRQHandler(void)
  * LED 演示 / IMU 自检在下面用 #if/#elif 互斥，优先级 LED > IMU > 流体 Demo。
  *
  * TIMA0(TIMER_0) 的 NVIC 在 main() 里打开 —— 它现在跑 5ms 的按键节拍
- *   （Key_Task + PowerKey_Task）。UART_0 的 NVIC 仍然是关的，想用在这里加：
- *     NVIC_EnableIRQ(UART_0_INST_INT_IRQN);    // UART1 接收
- * （外设侧的中断使能 SYSCFG_DL_init() 里已经做好了，只差 NVIC 这一层）
+ *   （Key_Task + PowerKey_Task）。
+ * UART_0 不需要任何 NVIC 使能：收发都走 DMA，主循环轮询（vcmd.c / vofa.c）。
  */
 int main(void)
 {
