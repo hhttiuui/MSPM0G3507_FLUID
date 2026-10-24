@@ -6,6 +6,7 @@ SHELL = cmd.exe
 
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
+../hardware/app.c \
 ../hardware/battery.c \
 ../hardware/clock.c \
 ../hardware/debug.c \
@@ -18,12 +19,12 @@ C_SRCS += \
 ../hardware/led_show.c \
 ../hardware/lsm6ds3trc.c \
 ../hardware/power.c \
+../hardware/scene_still.c \
 ../hardware/vcmd.c \
-../hardware/vofa.c \
-../hardware/app.c \
-../hardware/scene_still.c 
+../hardware/vofa.c 
 
 C_DEPS += \
+./hardware/app.d \
 ./hardware/battery.d \
 ./hardware/clock.d \
 ./hardware/debug.d \
@@ -36,12 +37,12 @@ C_DEPS += \
 ./hardware/led_show.d \
 ./hardware/lsm6ds3trc.d \
 ./hardware/power.d \
+./hardware/scene_still.d \
 ./hardware/vcmd.d \
-./hardware/vofa.d \
-./hardware/app.d \
-./hardware/scene_still.d 
+./hardware/vofa.d 
 
 OBJS += \
+./hardware/app.o \
 ./hardware/battery.o \
 ./hardware/clock.o \
 ./hardware/debug.o \
@@ -54,12 +55,12 @@ OBJS += \
 ./hardware/led_show.o \
 ./hardware/lsm6ds3trc.o \
 ./hardware/power.o \
+./hardware/scene_still.o \
 ./hardware/vcmd.o \
-./hardware/vofa.o \
-./hardware/app.o \
-./hardware/scene_still.o 
+./hardware/vofa.o 
 
 OBJS__QUOTED += \
+"hardware\app.o" \
 "hardware\battery.o" \
 "hardware\clock.o" \
 "hardware\debug.o" \
@@ -72,12 +73,12 @@ OBJS__QUOTED += \
 "hardware\led_show.o" \
 "hardware\lsm6ds3trc.o" \
 "hardware\power.o" \
+"hardware\scene_still.o" \
 "hardware\vcmd.o" \
-"hardware\vofa.o" \
-"hardware\app.o" \
-"hardware\scene_still.o" 
+"hardware\vofa.o" 
 
 C_DEPS__QUOTED += \
+"hardware\app.d" \
 "hardware\battery.d" \
 "hardware\clock.d" \
 "hardware\debug.d" \
@@ -90,12 +91,12 @@ C_DEPS__QUOTED += \
 "hardware\led_show.d" \
 "hardware\lsm6ds3trc.d" \
 "hardware\power.d" \
+"hardware\scene_still.d" \
 "hardware\vcmd.d" \
-"hardware\vofa.d" \
-"hardware\app.d" \
-"hardware\scene_still.d" 
+"hardware\vofa.d" 
 
 C_SRCS__QUOTED += \
+"../hardware/app.c" \
 "../hardware/battery.c" \
 "../hardware/clock.c" \
 "../hardware/debug.c" \
@@ -108,9 +109,8 @@ C_SRCS__QUOTED += \
 "../hardware/led_show.c" \
 "../hardware/lsm6ds3trc.c" \
 "../hardware/power.c" \
+"../hardware/scene_still.c" \
 "../hardware/vcmd.c" \
-"../hardware/vofa.c" \
-"../hardware/app.c" \
-"../hardware/scene_still.c" 
+"../hardware/vofa.c" 
 
 

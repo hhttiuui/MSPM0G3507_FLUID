@@ -558,9 +558,20 @@ void App_Tick(void)
     App_ReadInput(&in);
 
     /* 全局事件先消费：消费掉就从 in.key 清位，场景只拿到剩下的。
-     * USER1 不在这里消费 —— 长按关机走 TIMA0 中断，短按留给场景自己用。 */
-    if ((in.key & APP_KEY_USER2) != 0u) {
-        in.key = (uint8_t) (in.key & (uint8_t) ~APP_KEY_USER2);
+     *
+     * ⚠ 本板 **USER2 (PA24) 没有装按键，引脚悬空** —— 悬空输入经过去抖器可能
+     *   随机被承认成"按下"，拿它做切场景会莫名其妙跳场景，所以**不用它**。
+     *   syscfg 里给 PA24 开了内部上拉，至少让读数稳定；以后焊上按键就能用。
+     *
+     * 现有按键分配：
+     *   USER1 (PA25) 短按 = 下一个场景；**长按 2s = 关机**（走 TIMA0 中断）
+     *   USER3 (PA23)      = 上一个场景
+     *
+     * USER1 短按不在这里消费掉是没道理的 —— 长按关机由 PowerKey 用
+     * Key_IsDown() 判断，和这里的 Key_TookPress() 边沿互不干扰，
+     * 所以按住 2s 关机的过程中会先切一次场景，无所谓。 */
+    if ((in.key & APP_KEY_USER1) != 0u) {
+        in.key = (uint8_t) (in.key & (uint8_t) ~APP_KEY_USER1);
         App_Step(+1);
     }
     if ((in.key & APP_KEY_USER3) != 0u) {

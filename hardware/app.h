@@ -54,10 +54,15 @@ typedef struct {
     uint8_t  shake10;           /* 本帧摇晃幅度 ×10，取绝对值、截断到 255 */
 } app_in_t;
 
-/* 按键位（对应 key_id_t 的顺序）*/
+/* 按键位（对应 key_id_t 的顺序）
+ *
+ * ⚠ 本板只装了 USER1(PA25) 和 USER3(PA23) 两个按键。
+ *   USER2(PA24) **引脚悬空**，别拿它做任何功能 —— 悬空输入经去抖可能
+ *   随机被承认成"按下"。syscfg 里给它开了内部上拉，读数稳定但没按键。
+ *   宏保留着，以后焊上按键就能直接用。 */
 #define APP_KEY_BIT(k)      ((uint8_t) (1u << (uint8_t) (k)))
 #define APP_KEY_USER1       APP_KEY_BIT(0)
-#define APP_KEY_USER2       APP_KEY_BIT(1)
+#define APP_KEY_USER2       APP_KEY_BIT(1)   /* 未装按键 */
 #define APP_KEY_USER3       APP_KEY_BIT(2)
 
 /* ==================== 场景 ====================
