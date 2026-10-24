@@ -57,6 +57,8 @@
 #include "power.h"
 #include "vcmd.h"
 #include "vofa.h"
+#include "glyph_store.h"
+#include "flash_store.h"
 
 /* ==================== 配置 ==================== */
 
@@ -182,6 +184,7 @@ static const scene_t s_scenes[] = {
     /* 0 */ { FluidScene_Enter, FluidScene_Tick, FluidScene_Exit, FluidScene_Cmd },
     /* 1 */ { StillScene_Enter, StillScene_Tick, StillScene_Exit, StillScene_Cmd },
     /* 2 */ { TextScene_Enter,  TextScene_Tick,  TextScene_Exit,  TextScene_Cmd  },
+    /* 3 */ { FrameScene_Enter, FrameScene_Tick, FrameScene_Exit, 0             },
 };
 
 #define SCENE_COUNT     ((uint8_t) (sizeof(s_scenes) / sizeof(s_scenes[0])))
@@ -394,6 +397,47 @@ static void App_ReadInput(app_in_t *in)
 
 /* ==================== 场景切换 ==================== */
 
+/* 上位机直显：存下 240 B 像素并切到"单帧画面"场景。
+ * 由 vcmd.c 的二进制包解析调用（0xA5 开头的那套协议）。 */
+void App_ShowDirectFrame(const uint8_t *px)
+{
+    FrameScene_SetPixels(px);
+    App_Goto(3u);
+}
+
+/* 上位机字形条带：切到文字场景，再用发来的字形把条带覆盖掉。
+ * 顺序很重要 —— App_Goto 会触发 TextScene_Enter() → Restart()，
+ * 那里可能用内置字库重画一次；所以必须**先切场景、后拼条带**。 */
+uint8_t App_ShowGlyphs(const uint8_t *p, uint16_t len, uint8_t count, int8_t spacing)
+{
+    App_Goto(2u);
+    return TextScene_ComposeGlyphs(p, len, count, spacing);
+}
+
+/* 上位机条带（整条长图）：切到文字场景后把条带灌进去，由 MCU 自己滚。
+ * 顺序同 App_ShowGlyphs：先切场景（Enter 会重画一次），后覆盖条带。 */
+uint8_t App_ShowStrip(const uint8_t *bits, uint16_t cols)
+{
+    App_Goto(2u);
+    return TextScene_LoadStrip(bits, cols);
+}
+
+/* 把 Flash 里存的自定义滚动消息应用到文字场景。
+ * 上电加载后、以及串口收完一整轮数据后调用。 */
+uint8_t App_ApplyStoredGlyphs(void)
+{
+    const glyph_meta_t *m = GlyphStore_Meta();
+
+    if ((GlyphStore_HasData() == 0u) || (GlyphStore_DataLen() == 0u)) {
+        return 0u;
+    }
+
+    TextScene_SetScroll(m->step, m->ms, m->lev);
+
+    return App_ShowGlyphs(GlyphStore_Data(), GlyphStore_DataLen(),
+                          m->count, m->spacing);
+}
+
 void App_Goto(uint8_t id)
 {
     if (id >= SCENE_COUNT) {
@@ -515,6 +559,31 @@ void App_CmdTask(void)
             dbg.uart.tx_frames = 0u;
             dbg.uart.tx_drops  = 0u;
             dbg.uart.tx_stuck  = 0u;
+            break;
+
+        /* ---------------- Flash 自检 ----------------
+         * 用一个**专门的测试扇区**（数据区第 3 个扇区，0x10C00），
+         * 不碰 0x10000（头部）和 0x10400（字形数据），所以随时可以跑。
+         * 擦 → 写 32 字节图案 → 读回比对，结果进 dbg.flash。 */
+        case DBG_CMD_FLASH_TEST:
+            {
+                static const uint8_t pat[32] = {
+                    0x00u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u, 0x77u,
+                    0x88u, 0x99u, 0xAAu, 0xBBu, 0xCCu, 0xDDu, 0xEEu, 0xFFu,
+                    0x5Au, 0xA5u, 0x0Fu, 0xF0u, 0x3Cu, 0xC3u, 0x01u, 0x80u,
+                    0x7Fu, 0xFEu, 0x12u, 0x34u, 0x56u, 0x78u, 0x9Au, 0xBCu
+                };
+                uint32_t addr = FLASH_STORE_BASE + (3u * FLASH_STORE_SECTOR);
+
+                dbg.flash.runs++;
+
+                dbg.flash.erase_ok  = FlashStore_Erase(addr, 1u);
+                dbg.flash.write_ok  = (dbg.flash.erase_ok != 0u)
+                                      ? FlashStore_Write(addr, pat, 32u) : 0u;
+                dbg.flash.verify_ok = (dbg.flash.write_ok != 0u)
+                                      ? FlashStore_Verify(addr, pat, 32u) : 0u;
+                dbg.flash.last_ok   = dbg.flash.verify_ok;
+            }
             break;
 
         /* ---------------- 显示硬件（全局） ---------------- */
@@ -671,6 +740,10 @@ static void App_Init(void)
     s_lastMs    = tick_ms;
 
     dbg.app.scene_cnt = SCENE_COUNT;
+
+    /* 从 Flash 恢复自定义滚动消息（只读进 RAM，不做任何绘制）。
+     * 校验失败 / 没存过 → 什么都不做，文字场景用内置字库。 */
+    (void) GlyphStore_Load();
 
     /* 进第一个场景。enter 里会自己画首帧。 */
     App_Goto(0u);

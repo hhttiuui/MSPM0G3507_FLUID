@@ -60,6 +60,7 @@
 #include "debug.h"
 #include "scenes.h"
 #include "led_matrix.h"
+#include "glyph_store.h"        /* 上电恢复的自定义字形 */
 #include "ht16d33a.h"
 #include "vcmd.h"           /* VCMD_GetString()：text 命令带过来的字符串 */
 #include "wqy12_common.h"   /* 12×12 点阵字库（WQF_Find / WQF_PIXEL）*/
@@ -118,6 +119,10 @@ static uint8_t  s_rotCand;      /* 候选方向 */
 static uint32_t s_rotSince;     /* 候选开始稳定的时刻 */
 static uint8_t  s_orientAuto = 1u;   /* 1 = 自动跟随重力（默认）*/
 static uint32_t s_lastMs;
+
+/* 条带来源：0 = 内置字库（RenderStrip），1 = 上位机发来的字形（ComposeGlyphs）。
+ * 用来让 Restart() 在切回本场景时**不要**用字库重画、把上位机的条带覆盖掉。 */
+static uint8_t  s_ext;
 
 /* ==================== UTF-8 解码 ==================== */
 
@@ -300,7 +305,10 @@ static void DrawFrame(void)
 {
     uint8_t uw = WinWidth();
     uint8_t vh = WinHeight();
-    uint8_t voff = WinVOffset();
+    /* 内置字库单元只有 12 行（放在 14 行的框里，所以要往下偏一点）；
+     * 上位机发来的字形是**整屏高度**渲染的，再偏就丢行，所以不偏、行数放到 16。 */
+    uint8_t voff = (s_ext != 0u) ? 0u : WinVOffset();
+    uint8_t rows = (s_ext != 0u) ? (uint8_t) APP_SCRATCH_ROWS : (uint8_t) WQF_H;
     uint8_t u, v;
 
     LedMatrix_Clear();
@@ -321,7 +329,7 @@ static void DrawFrame(void)
                 int16_t r = (int16_t) ((int16_t) v - (int16_t) voff);
                 uint8_t x, y;
 
-                if ((r < 0) || (r >= (int16_t) WQF_H)) {
+                if ((r < 0) || (r >= (int16_t) rows)) {
                     continue;
                 }
                 if ((s_scratch.text_px[r][(uint16_t) sx >> 3] & bit) == 0u) {
@@ -426,7 +434,11 @@ static void TrackOrient(const app_in_t *in)
  * 文字/参数改完之后调它，改完马上能看到，不用等下一次 tick。 */
 static void Restart(void)
 {
-    RenderStrip();
+    if (s_ext == 0u) {
+        RenderStrip();              /* 内置字库：重新排版 */
+    }
+    /* s_ext != 0：条带上位机已经拼好了，切回来直接沿用，不要再覆盖 */
+
     s_pos      = (uint16_t) WinWidth();   /* 一进来就能看见字，不是一片黑 */
     s_lastMs   = tick_ms;
     s_rotSince = tick_ms;
@@ -435,13 +447,186 @@ static void Restart(void)
     DrawFrame();
 }
 
+/* ==================== 上位机字形拼接 ====================
+ *
+ * 数据格式（一个包，见 vcmd.c 的 ver=2）：
+ *   [w][h][bitmap] × count
+ *   bitmap：ceil(w/8) × h 字节，行优先，**MSB = 最左**（和内部条带一致）
+ *
+ * 拼接规则：字形按顺序首尾相接，每个字后面留 spacing 像素空白
+ * （spacing 为负 = 下一个字压到上一个字上，页面的"字间距"允许 -4）。
+ * 拼好的条带直接进 s_scratch.text_px，之后完全复用本文件的滚动 + 旋转逻辑
+ * （DrawFrame 会按 s_rot 重新映射坐标，所以重力朝向自动生效）。
+ *
+ * 返回 1 = 成功，0 = 数据不合法（长度不够 / w/h 越界）。
+ *
+ * ⚠ 高度 ≤16 = 整屏。上位机按屏幕高度渲染，DrawFrame 对这种条带不加竖直偏移，
+ *   所以字形上下边距由上位机自己控制（页面上的"偏移 Y"）。
+ */
+uint8_t TextScene_ComposeGlyphs(const uint8_t *p, uint16_t len,
+                                uint8_t count, int8_t spacing)
+{
+    int32_t  cursor = 0;        /* 可为负：spacing < 0 时是"倒回去收紧" */
+    int32_t  endX   = 0;        /* 已画内容的最右边界（不含末尾间距）*/
+    uint16_t row, i;
+    uint8_t  n;
+
+    if ((p == 0) || (count == 0u)) {
+        return 0u;
+    }
+
+    for (row = 0u; row < APP_SCRATCH_ROWS; row++) {
+        for (i = 0u; i < APP_SCRATCH_ROW_BYTES; i++) {
+            s_scratch.text_px[row][i] = 0u;
+        }
+    }
+
+    for (n = 0u; n < count; n++) {
+        uint8_t  w, h, roww;
+        uint16_t need;
+        uint8_t  gy, gx;
+
+        if (len < 2u) {
+            return 0u;
+        }
+
+        w = p[0];
+        h = p[1];
+        /* 宽度允许到 120：字号调大时一个汉字可能比屏幕还宽，靠滚动露出全貌；
+         * 上位机的"整条条带"也复用这个格式（w = 条带宽度，count = 1）。
+         * 上限 120 是帧头 [5] 的 1 字节长度定的：ceil(120/8)×16 = 240 ≤ 255。 */
+        if ((w == 0u) || (w > 120u) || (h == 0u) || (h > 16u)) {
+            return 0u;
+        }
+
+        roww = (uint8_t) ((w + 7u) / 8u);
+        need = (uint16_t) (2u + ((uint16_t) roww * (uint16_t) h));
+        if (len < need) {
+            return 0u;
+        }
+
+        for (gy = 0u; gy < h; gy++) {
+            for (gx = 0u; gx < w; gx++) {
+                uint8_t b = p[2u + ((uint16_t) gy * (uint16_t) roww) + (uint8_t) (gx >> 3)];
+
+                if ((b & (uint8_t) (0x80u >> (gx & 7u))) != 0u) {
+                    int32_t x = cursor + (int32_t) gx;
+
+                    if ((x >= 0) && (x < (int32_t) TEXT_MAX_PX)) {
+                        uint16_t ux = (uint16_t) x;
+
+                        s_scratch.text_px[gy][ux >> 3] |=
+                            (uint8_t) (0x80u >> (ux & 7u));
+                    }
+                }
+            }
+        }
+
+        p    += need;
+        len   = (uint16_t) (len - need);
+
+        cursor += (int32_t) w;
+        if (cursor > endX) {
+            endX = cursor;                  /* 记住最右边界：末尾不再加间距 */
+        }
+
+        if (cursor >= (int32_t) TEXT_MAX_PX) {
+            break;                          /* 条带满了 */
+        }
+        cursor += (int32_t) spacing;        /* 负数 = 下一个字压过来 */
+        if (cursor < 0) {
+            cursor = 0;
+        }
+    }
+
+    s_ext      = 1u;                        /* 明确条带来源是上位机 */
+    s_cols     = (uint16_t) endX;
+    s_pos      = (uint16_t) WinWidth();
+    s_lastMs   = tick_ms;
+    s_rotSince = tick_ms;
+    s_rotCand  = s_rot;
+    dbg.app.rot = s_rot;
+    ClampPos();
+    DrawFrame();
+
+    return 1u;
+}
+
+/* ==================== 上位机条带（整条长图）====================
+ *
+ * 数据：bits = 16 行 × ceil(cols/8) 字节，行优先，MSB = 最左。
+ * 直接把条带灌进 s_scratch.text_px，之后完全复用本文件的滚动 + 重力朝向
+ * （s_cols / s_pos / s_step / s_ms / DrawFrame 全都现成）。
+ *
+ * 和 TextScene_ComposeGlyphs 的区别：那个是"按字拼"，这个是"整条照搬"，
+ * 排版已经在 PC 上做完了。
+ *
+ * 返回 1 = 成功，0 = 参数不合法。
+ */
+uint8_t TextScene_LoadStrip(const uint8_t *bits, uint16_t cols)
+{
+    uint8_t  roww, row;
+    uint16_t i;
+
+    if ((bits == 0) || (cols == 0u) || (cols > TEXT_MAX_PX)) {
+        return 0u;
+    }
+
+    roww = (uint8_t) ((cols + 7u) / 8u);
+
+    for (row = 0u; row < APP_SCRATCH_ROWS; row++) {
+        for (i = 0u; i < APP_SCRATCH_ROW_BYTES; i++) {
+            s_scratch.text_px[row][i] =
+                (i < (uint16_t) roww) ? bits[((uint16_t) row * roww) + i] : 0u;
+        }
+    }
+
+    s_ext      = 1u;                        /* 条带来源是上位机 */
+    s_cols     = cols;
+    s_pos      = (uint16_t) WinWidth();
+    s_lastMs   = tick_ms;
+    s_rotSince = tick_ms;
+    s_rotCand  = s_rot;
+    dbg.app.rot = s_rot;
+    ClampPos();
+    DrawFrame();
+
+    return 1u;
+}
+
 /* ==================== 场景入口 ==================== */
 
 void TextScene_Enter(void)
 {
+    /* 有存 Flash 的自定义字形时优先用它（掉电保留的那条消息）。
+     * 否则用内置字库的默认文字。 */
+    if (GlyphStore_HasData() != 0u) {
+        const glyph_meta_t *m = GlyphStore_Meta();
+
+        TextScene_SetScroll(m->step, m->ms, m->lev);
+
+        if (TextScene_ComposeGlyphs(GlyphStore_Data(), GlyphStore_DataLen(),
+                                    m->count, m->spacing) != 0u) {
+            return;
+        }
+    }
+
     /* App_Goto 已经清过屏。这里重画条带 —— 切走再切回来时 union 可能被
      * 别的场景踩过，不能假设 px 还是好的。文字本身在静态区，没丢。 */
     Restart();
+}
+
+void TextScene_SetScroll(uint8_t step, uint16_t ms, uint8_t lev)
+{
+    if ((step >= (uint8_t) TEXT_STEP_MIN) && (step <= (uint8_t) TEXT_STEP_MAX)) {
+        s_step = step;
+    }
+    if ((ms >= (uint16_t) TEXT_MS_MIN) && (ms <= (uint16_t) TEXT_MS_MAX)) {
+        s_ms = ms;
+    }
+
+    s_lev    = lev;
+    s_lastMs = tick_ms;
 }
 
 void TextScene_Exit(void)
@@ -512,6 +697,7 @@ uint8_t TextScene_Cmd(uint16_t id, const int32_t *arg)
                 }
                 s_text[i] = '\0';
             }
+            s_ext = 0u;                 /* 切回内置字库渲染 */
             Restart();
             return 1u;
 

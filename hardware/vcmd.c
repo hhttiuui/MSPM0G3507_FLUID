@@ -14,6 +14,9 @@
 #include "vcmd.h"
 #include <stdbool.h>
 #include "debug.h"
+#include "clock.h"          /* tick_ms：二进制半包超时用 */
+#include "app.h"            /* App_ShowDirectFrame() */
+#include "glyph_store.h"    /* 自定义滚动字形：接收 → 校验 → 存 Flash */
 #include "ti_msp_dl_config.h"
 
 /* 一行最长字节数。
@@ -26,9 +29,13 @@
 #define VCMD_STR_MAX        (64u)
 
 /* RX DMA 一次武装能收多少字节。
- * ⚠ 115200 下 128 字节 = 11 ms，比一帧（21.5 ms）短，所以正常粘贴不会溢出。
- *   再大就会跨越多个主循环周期，中途满了以后到达的字节会丢。 */
-#define VCMD_RX_SIZE        (128u)
+ * ⚠ 115200 下 512 字节 = 44 ms，比一帧（21.5 ms）长一倍多，所以：
+ *    · 文本命令：一次粘贴 512 B 以内不会溢出（原先是 128）
+ *    · 二进制帧：一整包 246 B（6 B 头 + 240 B 数据）能**一次装下**，
+ *      不会被 DMA 缓冲边界切断。这是单帧直显能工作的前提。
+ *    · 连续快速发多帧时仍可能丢字节（DMA 满了以后到达的会掉进 4 级 FIFO），
+ *      所以上位机每发一包应当留 ≥ 50 ms 间隔。 */
+#define VCMD_RX_SIZE        (512u)
 
 static char     s_rx[VCMD_RX_SIZE];
 static char     s_line[VCMD_LINE_MAX];
@@ -40,6 +47,194 @@ static uint8_t  s_full;          /* RX DMA 已收满并自动停下 */
 
 /* 最近一次带字符串命令的参数（见 VCMD_GetString 的注释） */
 static char     s_str[VCMD_STR_MAX];
+
+/* ==================== 二进制帧（上位机直显）====================
+ *
+ * 首字节 0xA5 用来和文本命令区分。但**只在行首**才认它（s_len == 0）——
+ * 因为 0xA5 同时也是 UTF-8 汉字的中间字节："好" = E5 A5 BD。
+ * 如果整行都在找包头，`text 你好世界` 会在"好"的第二个字节处被拦腰截断，
+ * 后半行被当成二进制包吞掉（踩过：发"你好世界"显示成"你口de 2"）。
+ * 文本命令都以可打印 ASCII 开头，所以"行首 0xA5"不会和文本冲突。
+ *
+ * 包格式（和 pc/index.html 的"帧数据"完全一致）：
+ *   [0] 0xA5  magic
+ *   [1] 1     版本
+ *   [2] flags bit[1:0] 位深（0 = 8bit，1 = 1bit）
+ *   [3] 16    行数
+ *   [4] 15    列数
+ *   [5] len   负载字节数（8bit = 240，1bit = 32）
+ *   [6..] 负载
+ *
+ * 8bit：240 B，行优先 idx = row×15 + col，值 = 亮度 0~255
+ * 1bit：32 B = 16 行 × 2 B；每行 byte0 装 x1~x8（bit7 = x1），
+ *       byte1 装 x9~x15（bit7 = x9，bit0 恒 0）
+ *
+ * ⚠ 没有 CRC：单帧直显属于"发一次、看一眼"，丢包就重发，不值得加校验。
+ *   等做 Flash 槽上传（多帧、不可重来）时再加 CRC16。
+ */
+#define VCMD_BIN_MAGIC      (0xA5u)
+#define VCMD_BIN_HDR        (6u)
+/* 6 B 头 + 最多 400 B 负载。
+ * 400 是给"字形条带"留的：10 个 12×12 字形 ≈ 10 × (2 + 24) = 260 B。
+ * ⚠ 不要超过 RX 缓冲（512 B），否则一个包会跨 DMA 重装边界、丢字节。 */
+#define VCMD_BIN_MAX        (VCMD_BIN_HDR + 400u)
+#define VCMD_BIN_TIMEOUT_MS (200u)      /* 半包超过这么久没后续 → 丢弃 */
+
+static uint8_t  s_bin[VCMD_BIN_MAX];
+static uint16_t s_binLen;               /* 0 = 当前不在收包 */
+static uint16_t s_binNeed;              /* 0 = 还没解析出总长 */
+static uint32_t s_binTick;              /* 收包起始时刻（超时用） */
+
+/* 1 bit 解包用的临时缓冲。**用 static 不用局部**：
+ * 240 B 放栈上，在 8 KB 栈里太冒险了。 */
+static uint8_t  s_binPx[240];
+
+/* 一个完整二进制包到了：解析 + 显示 */
+static void vcmd_bin_dispatch(void)
+{
+    uint8_t ver   = s_bin[1];
+    uint8_t flags = s_bin[2];
+    uint8_t rows  = s_bin[3];
+    uint8_t cols  = s_bin[4];
+    uint8_t len   = s_bin[5];
+    uint8_t bpp   = (uint8_t) (flags & 0x03u);
+    const uint8_t *src = &s_bin[VCMD_BIN_HDR];
+
+    /* ---- 自定义滚动字形：三包协议（接收 → 校验 → 存 Flash）----
+     * BEGIN : A5|2|count|spacing|flags|len=4| step, ms.lo, ms.hi, lev
+     * GLYPH : A5|3|idx  |w    |h    |len  | bitmap
+     * END   : A5|4|0    |0    |0    |len=2| crc.lo, crc.hi
+     *
+     * 三包分开是因为 8 位字形一个字就 256 B，一包装不下；
+     * 而且 MCU 可以在 GLYPH 阶段就做长度校验，不用先攒完再看。
+     */
+    if ((ver == 2u) || (ver == 3u) || (ver == 4u)) {
+        if (ver == 2u) {                        /* BEGIN */
+            uint8_t  step, lev;
+            uint16_t ms;
+
+            if ((len < 4u) || (s_bin[2] == 0u)) {
+                dbg.uart.bad++;
+                return;
+            }
+
+            step = s_bin[6];
+            ms   = (uint16_t) ((uint16_t) s_bin[7] | ((uint16_t) s_bin[8] << 8));
+            lev  = s_bin[9];
+
+            if (GlyphStore_Begin(s_bin[2], (int8_t) s_bin[3], step, ms, lev,
+                                 (uint8_t) (s_bin[4] & 0x01u)) == 0u) {
+                dbg.uart.bad++;
+            }
+            return;
+        }
+
+        if (ver == 3u) {                        /* GLYPH */
+            uint8_t w    = s_bin[3];
+            uint8_t h    = s_bin[4];
+            uint8_t roww = (uint8_t) ((w + 7u) / 8u);
+            uint8_t wh[2];
+
+            if ((w == 0u) || (w > 120u) || (h == 0u) || (h > 16u) ||
+                (len != (uint8_t) (roww * h))) {
+                dbg.uart.bad++;
+                return;
+            }
+
+            wh[0] = w;
+            wh[1] = h;
+
+            /* 按 [w][h][bitmap] 的顺序进缓冲，CRC 顺序也就跟着对了 */
+            if ((GlyphStore_Append(wh, 2u) == 0u) ||
+                (GlyphStore_Append(src, (uint16_t) len) == 0u)) {
+                dbg.uart.bad++;
+            }
+            return;
+        }
+
+        /* ver == 4：END —— 校验 CRC → 落盘 → 立刻播放 */
+        {
+            uint16_t crc = (uint16_t) ((uint16_t) s_bin[6] |
+                                       ((uint16_t) s_bin[7] << 8));
+
+            if ((len != 2u) || (GlyphStore_CrcOk(crc) == 0u) ||
+                (GlyphStore_Commit() == 0u) ||
+                (App_ApplyStoredGlyphs() == 0u)) {
+                dbg.uart.bad++;
+            } else {
+                dbg.uart.bin_ok++;
+                dbg.uart.cmds++;
+            }
+        }
+        return;
+    }
+
+    if ((ver != 1u) || (rows != 16u)) {
+        dbg.uart.bad++;
+        return;
+    }
+
+    /* ---- 条带（flags bit2）：cols 可变，MCU 自己横向滚动 ----
+     * 1 bit：负载 = ceil(cols/8) × 16 字节，行优先、MSB = 最左。
+     *
+     * ⚠ 宽度上限 120 px 是帧头算出来的，不是随便定的：帧头 [5] 只有 1 字节
+     *   长度，ceil(120/8)=15，15×16=240 ≤ 255 装得下；121 px 就变 16×16=256
+     *   溢出成 0。再宽必须把 [5] 扩成 2 字节（协议改动）。 */
+    if ((flags & 0x04u) != 0u) {
+        uint16_t roww = (uint16_t) (((uint16_t) cols + 7u) / 8u);
+
+        if ((cols == 0u) || (cols > 120u) || (bpp != 1u) ||
+            ((uint16_t) len != (uint16_t) (roww * 16u))) {
+            dbg.uart.bad++;
+            return;
+        }
+
+        if (App_ShowStrip(src, (uint16_t) cols) == 0u) {
+            dbg.uart.bad++;
+        } else {
+            dbg.uart.bin_ok++;
+            dbg.uart.cmds++;
+        }
+        return;
+    }
+
+    if (cols != 15u) {
+        dbg.uart.bad++;
+        return;
+    }
+
+    if ((bpp == 0u) && (len == 240u)) {
+        App_ShowDirectFrame(src);
+        dbg.uart.bin_ok++;
+        dbg.uart.cmds++;
+        return;
+    }
+
+    if ((bpp == 1u) && (len == 32u)) {
+        uint8_t r, i;
+
+        for (r = 0u; r < 16u; r++) {
+            uint8_t b0 = src[(uint16_t) r * 2u];
+            uint8_t b1 = src[(uint16_t) r * 2u + 1u];
+
+            for (i = 0u; i < 8u; i++) {             /* x1..x8 */
+                s_binPx[(uint16_t) r * 15u + i] =
+                    (((b0 >> (uint8_t) (7u - i)) & 1u) != 0u) ? 0xFFu : 0u;
+            }
+            for (i = 0u; i < 7u; i++) {             /* x9..x15 */
+                s_binPx[(uint16_t) r * 15u + 8u + i] =
+                    (((b1 >> (uint8_t) (7u - i)) & 1u) != 0u) ? 0xFFu : 0u;
+            }
+        }
+
+        App_ShowDirectFrame(s_binPx);
+        dbg.uart.bin_ok++;
+        dbg.uart.cmds++;
+        return;
+    }
+
+    dbg.uart.bad++;                                 /* 位深/长度不认识 */
+}
 
 /* ---- 别名表：手打方便。命令号见 debug.h 的 DBG_CMD_* ----
  * 顺序无所谓，查找是线性扫描（只在收到命令时跑一次，几微秒）。 */
@@ -54,6 +249,7 @@ static const vcmd_alias_t s_alias[] = {
     { "div",    DBG_CMD_SET_DIV, 0 },   /* div 0~7       遥测分频 */
     { "mask",   DBG_CMD_SET_MASK, 0 },   /* mask 15       通道掩码 */
     { "reset",  DBG_CMD_RESET_STATS, 0 },   /* reset         清零统计 */
+    { "ftest",  DBG_CMD_FLASH_TEST,  0 },   /* ftest         Flash 擦/写/读回自检 */
 
     /* ---- 流体 ---- */
     { "dt",     DBG_CMD_FLUID_SET_DT, 0 },   /* dt 3200       dt = 0.032 s */
@@ -235,6 +431,48 @@ static void vcmd_exec(char *line)
 /* 逐字节喂进行缓冲。返回 1 表示这一行已经完整（可以执行了）。 */
 static uint8_t vcmd_feed(char c)
 {
+    /* ---- 二进制包优先（0xA5 开头）----
+     * 这里**永远返回 0**：一个包可能在一次 Tick 里就收完，不该打断本圈消费。 */
+    if (s_binLen != 0u) {
+        if (s_binLen >= (uint16_t) VCMD_BIN_MAX) {
+            s_binLen = 0u;              /* 不该发生：总长已校验过 */
+            s_binNeed = 0u;
+            dbg.uart.bad++;
+            return 0u;
+        }
+
+        s_bin[s_binLen] = (uint8_t) c;
+        s_binLen++;
+
+        /* 凑够 6 字节头就算出总长，顺便校验 */
+        if ((s_binNeed == 0u) && (s_binLen >= (uint16_t) VCMD_BIN_HDR)) {
+            s_binNeed = (uint16_t) (VCMD_BIN_HDR + s_bin[5]);
+            if ((s_binNeed > (uint16_t) VCMD_BIN_MAX) ||
+                (s_binNeed <= (uint16_t) VCMD_BIN_HDR)) {
+                s_binLen  = 0u;
+                s_binNeed = 0u;
+                dbg.uart.bad++;
+                return 0u;
+            }
+        }
+
+        if ((s_binNeed != 0u) && (s_binLen >= s_binNeed)) {
+            vcmd_bin_dispatch();
+            s_binLen  = 0u;
+            s_binNeed = 0u;
+        }
+        return 0u;
+    }
+
+    if ((s_len == 0u) && (s_overflow == 0u) &&
+        ((uint8_t) c == VCMD_BIN_MAGIC)) {
+        s_bin[0]  = (uint8_t) c;
+        s_binLen  = 1u;
+        s_binNeed = 0u;
+        s_binTick = tick_ms;
+        return 0u;
+    }
+
     if ((c == '\n') || (c == '\r')) {
         if (s_overflow == 0u) {
             s_line[s_len] = '\0';
@@ -294,6 +532,15 @@ void VCMD_Init(void)
 void VCMD_Tick(void)
 {
     uint16_t n;
+
+    /* 半包超时：上位机发到一半断了（拔线 / 关页面），把残留丢掉，
+     * 否则下一次正常数据首字节会被当成包体，一直错位。 */
+    if ((s_binLen != 0u) &&
+        ((uint32_t) (tick_ms - s_binTick) > VCMD_BIN_TIMEOUT_MS)) {
+        s_binLen  = 0u;
+        s_binNeed = 0u;
+        dbg.uart.bad++;
+    }
 
     if (DL_DMA_isChannelEnabled(DMA, DMA_CH0_CHAN_ID) != false) {
         /* 还在收：已写入字节数 = 总长 − 剩余 */

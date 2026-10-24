@@ -120,6 +120,22 @@ void App_Goto(uint8_t id);
 /* 相对切换：+1 下一个 / -1 上一个（循环）*/
 void App_Step(int8_t d);
 
+/* 上位机字形条带：按字拼好后交给文字场景滚动（会切到场景 2）。
+ * payload 格式见 TextScene_ComposeGlyphs()。返回 1 = 成功。 */
+uint8_t App_ShowGlyphs(const uint8_t *p, uint16_t len, uint8_t count, int8_t spacing);
+
+/* 把 Flash 里存的自定义滚动消息应用到文字场景（含滚动参数）。返回 1 = 成功。 */
+uint8_t App_ApplyStoredGlyphs(void);
+
+/* 上位机条带（整条长图）：切到文字场景并灌入条带，由 MCU 自己横向滚动。
+ * bits = 16 行 × ceil(cols/8) 字节，行优先，MSB = 最左。返回 1 = 成功。 */
+uint8_t App_ShowStrip(const uint8_t *bits, uint16_t cols);
+
+/* 上位机直显：把一帧 240 B 像素（行优先 idx = row×15+col，0~255）显示出来，
+ * 并切到"单帧画面"场景（编号 3）。
+ * 串口二进制包（0xA5 开头）解析后调用这里；也可以直接调。 */
+void App_ShowDirectFrame(const uint8_t *px);
+
 /* 当前场景号 / 场景总数 */
 uint8_t App_Current(void);
 uint8_t App_Count(void);

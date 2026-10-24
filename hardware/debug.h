@@ -239,6 +239,18 @@ typedef struct {
     uint32_t hold_ms;
 } dbg_pwr_t;
 
+/* ---- Flash 存储（实现见 hardware/flash_store.c / glyph_store.c）----
+ * 自检用串口 `ftest` 触发（写一个 1 KB 扇区的测试图案再读回比对）。
+ *   erase_ok / write_ok / verify_ok 都为 1 才算通路正常
+ *   runs 是累计执行次数 */
+typedef struct {
+    uint8_t  erase_ok;
+    uint8_t  write_ok;
+    uint8_t  verify_ok;
+    uint8_t  last_ok;
+    uint32_t runs;
+} dbg_flash_t;
+
 /* ---- 电池采样（实现见 hardware/battery.c）----
  * 这个模块现在只做"测量"，不做任何判断/关机动作。
  * 判读顺序：
@@ -285,6 +297,7 @@ typedef struct {
     uint32_t tx_frames;  /* 遥测已发出的帧数 */
     uint32_t tx_drops;   /* 因 DMA 忙而丢掉的帧 */
     uint32_t tx_stuck;   /* TX DMA 看门狗复位次数 */
+    uint32_t bin_ok;     /* 二进制帧包接收成功数（0xA5 协议） */
     uint16_t last_id;    /* 最近一条命令号 */
     uint8_t  div_shift;  /* 遥测分频：0 = 关，n = 每 2^n 帧发一帧 */
     uint16_t mask;       /* 遥测通道掩码 */
@@ -308,6 +321,7 @@ typedef struct {
 #define DBG_CMD_SET_DIV             0x0001u  /* arg[0]: 0=关，n=每 2^n 帧一帧遥测 */
 #define DBG_CMD_SET_MASK            0x0002u  /* arg[0]: 通道掩码 bit0~15 */
 #define DBG_CMD_RESET_STATS         0x0003u  /* 清零 dbg.uart 的统计 */
+#define DBG_CMD_FLASH_TEST          0x0004u  /* 擦/写/读回 一个测试扇区，结果在 dbg.flash */
 
 /* ---- 流体 ---- */
 #define DBG_CMD_FLUID_SET_DT        0x0101u  /* arg[0]: dt × 1e5（3200 = 0.032s）*/
@@ -363,6 +377,7 @@ typedef struct {
     dbg_led_t   led;
     dbg_fluid_t fluid;
     dbg_bat_t   bat;
+    dbg_flash_t flash;
     dbg_uart_t  uart;
     dbg_cmd_t   cmd;
     dbg_app_t   app;

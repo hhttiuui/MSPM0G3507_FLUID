@@ -10,8 +10,10 @@ C_SRCS += \
 ../hardware/battery.c \
 ../hardware/clock.c \
 ../hardware/debug.c \
+../hardware/flash_store.c \
 ../hardware/fluid.c \
 ../hardware/fluid_demo.c \
+../hardware/glyph_store.c \
 ../hardware/ht16d33a.c \
 ../hardware/imu_selftest.c \
 ../hardware/key.c \
@@ -19,6 +21,7 @@ C_SRCS += \
 ../hardware/led_show.c \
 ../hardware/lsm6ds3trc.c \
 ../hardware/power.c \
+../hardware/scene_frame.c \
 ../hardware/scene_still.c \
 ../hardware/scene_text.c \
 ../hardware/vcmd.c \
@@ -29,8 +32,10 @@ C_DEPS += \
 ./hardware/battery.d \
 ./hardware/clock.d \
 ./hardware/debug.d \
+./hardware/flash_store.d \
 ./hardware/fluid.d \
 ./hardware/fluid_demo.d \
+./hardware/glyph_store.d \
 ./hardware/ht16d33a.d \
 ./hardware/imu_selftest.d \
 ./hardware/key.d \
@@ -38,6 +43,7 @@ C_DEPS += \
 ./hardware/led_show.d \
 ./hardware/lsm6ds3trc.d \
 ./hardware/power.d \
+./hardware/scene_frame.d \
 ./hardware/scene_still.d \
 ./hardware/scene_text.d \
 ./hardware/vcmd.d \
@@ -48,8 +54,10 @@ OBJS += \
 ./hardware/battery.o \
 ./hardware/clock.o \
 ./hardware/debug.o \
+./hardware/flash_store.o \
 ./hardware/fluid.o \
 ./hardware/fluid_demo.o \
+./hardware/glyph_store.o \
 ./hardware/ht16d33a.o \
 ./hardware/imu_selftest.o \
 ./hardware/key.o \
@@ -57,6 +65,7 @@ OBJS += \
 ./hardware/led_show.o \
 ./hardware/lsm6ds3trc.o \
 ./hardware/power.o \
+./hardware/scene_frame.o \
 ./hardware/scene_still.o \
 ./hardware/scene_text.o \
 ./hardware/vcmd.o \
@@ -67,8 +76,10 @@ OBJS__QUOTED += \
 "hardware\battery.o" \
 "hardware\clock.o" \
 "hardware\debug.o" \
+"hardware\flash_store.o" \
 "hardware\fluid.o" \
 "hardware\fluid_demo.o" \
+"hardware\glyph_store.o" \
 "hardware\ht16d33a.o" \
 "hardware\imu_selftest.o" \
 "hardware\key.o" \
@@ -76,6 +87,7 @@ OBJS__QUOTED += \
 "hardware\led_show.o" \
 "hardware\lsm6ds3trc.o" \
 "hardware\power.o" \
+"hardware\scene_frame.o" \
 "hardware\scene_still.o" \
 "hardware\scene_text.o" \
 "hardware\vcmd.o" \
@@ -86,8 +98,10 @@ C_DEPS__QUOTED += \
 "hardware\battery.d" \
 "hardware\clock.d" \
 "hardware\debug.d" \
+"hardware\flash_store.d" \
 "hardware\fluid.d" \
 "hardware\fluid_demo.d" \
+"hardware\glyph_store.d" \
 "hardware\ht16d33a.d" \
 "hardware\imu_selftest.d" \
 "hardware\key.d" \
@@ -95,6 +109,7 @@ C_DEPS__QUOTED += \
 "hardware\led_show.d" \
 "hardware\lsm6ds3trc.d" \
 "hardware\power.d" \
+"hardware\scene_frame.d" \
 "hardware\scene_still.d" \
 "hardware\scene_text.d" \
 "hardware\vcmd.d" \
@@ -105,8 +120,10 @@ C_SRCS__QUOTED += \
 "../hardware/battery.c" \
 "../hardware/clock.c" \
 "../hardware/debug.c" \
+"../hardware/flash_store.c" \
 "../hardware/fluid.c" \
 "../hardware/fluid_demo.c" \
+"../hardware/glyph_store.c" \
 "../hardware/ht16d33a.c" \
 "../hardware/imu_selftest.c" \
 "../hardware/key.c" \
@@ -114,6 +131,7 @@ C_SRCS__QUOTED += \
 "../hardware/led_show.c" \
 "../hardware/lsm6ds3trc.c" \
 "../hardware/power.c" \
+"../hardware/scene_frame.c" \
 "../hardware/scene_still.c" \
 "../hardware/scene_text.c" \
 "../hardware/vcmd.c" \
