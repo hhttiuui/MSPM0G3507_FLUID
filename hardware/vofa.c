@@ -70,7 +70,7 @@ static uint16_t frame_build(void)
     uint8_t sent = 0u;
     uint8_t ch;
 
-    for (ch = 0u; ch < 9u; ch++) {
+    for (ch = 0u; ch < 10u; ch++) {
         int32_t v;
 
         if ((s_mask & (uint16_t) (1u << ch)) == 0u) {
@@ -87,7 +87,9 @@ static uint16_t frame_build(void)
             case VOFA_CH_SHAKE:    v = (int32_t) dbg.fluid.shake_pk10;   break;
             case VOFA_CH_DENS_MAX: v = (int32_t) dbg.fluid.dens_max;     break;
             /* 场景号：切换后这一路立刻变，是"按键到底有没有生效"最直接的证据 */
-            default:               v = (int32_t) dbg.app.scene;          break;
+            case VOFA_CH_SCENE:    v = (int32_t) dbg.app.scene;          break;
+            /* 旋转方向：确认自动判定到底转没转、转对没转 */
+            default:               v = (int32_t) dbg.app.rot;            break;
         }
 
         if (sent != 0u) {
@@ -147,7 +149,7 @@ void VOFA_SetDivShift(uint32_t n)
 
 void VOFA_SetMask(uint32_t mask)
 {
-    s_mask = (uint16_t) (mask & 0x01FFu);
+    s_mask = (uint16_t) (mask & 0x03FFu);
 
     dbg.uart.mask = s_mask;
 }

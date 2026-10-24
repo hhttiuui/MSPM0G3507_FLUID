@@ -341,13 +341,14 @@ typedef struct {
 #define DBG_CMD_TEXT_MS             0x0402u  /* arg[0]: 帧间隔 ms 10~500 */
 #define DBG_CMD_TEXT_LEV            0x0403u  /* arg[0]: 文字亮度 0~255 */
 #define DBG_CMD_TEXT_POS            0x0404u  /* arg[0]: 直接跳到滚动位置（定格看）*/
+#define DBG_CMD_TEXT_ORIENT         0x0405u  /* arg[0]: 0~3 手动固定方向，4 = 自动跟随重力 */
 
 /* 场景框架的观测量。切没切成功、切了几次，看这里最直接。 */
 typedef struct {
     uint8_t scene;          /* 当前场景号 */
     uint8_t scene_cnt;      /* 场景总数 */
     uint8_t switches;       /* 累计切换次数（含开机那次）*/
-    uint8_t reserved;
+    uint8_t rot;            /* 文字场景当前生效的旋转：0/1/2/3 */
 } dbg_app_t;
 
 typedef struct {

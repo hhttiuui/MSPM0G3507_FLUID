@@ -41,9 +41,10 @@
 #define VOFA_CH_BAT_MV     5u   /* 电池电压 mV（0 = 读取失败）*/
 #define VOFA_CH_SHAKE      6u   /* 窗口内摇晃峰值 ×10 */
 #define VOFA_CH_DENS_MAX   7u   /* 窗口内最大密度 ×1000 */
-#define VOFA_CH_SCENE      8u   /* 当前场景号（0 流体 / 1 静态图）*/
+#define VOFA_CH_SCENE      8u   /* 当前场景号（0 流体 / 1 静态图 / 2 文字）*/
+#define VOFA_CH_ROT        9u   /* 文字场景当前旋转方向 0~3 */
 
-#define VOFA_CH_ALL        0x01FFu  /* 9 路全开，mask 取值 0~511 */
+#define VOFA_CH_ALL        0x03FFu  /* 10 路全开，mask 取值 0~1023 */
 #define VOFA_CH_DEFAULT    0x000Fu  /* 默认只开前 4 路：sim/fps/ax/ay */
 
 /* ---- 分频：0 = 关闭；n = 每 2^n 帧发一帧 ----

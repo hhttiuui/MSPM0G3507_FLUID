@@ -87,6 +87,7 @@ static const vcmd_alias_t s_alias[] = {
     { "tms",    DBG_CMD_TEXT_MS,   0 },   /* tms 40        帧间隔 ms */
     { "tlev",   DBG_CMD_TEXT_LEV,  0 },   /* tlev 255      文字亮度 */
     { "tpos",   DBG_CMD_TEXT_POS,  0 },   /* tpos 30       跳到滚动位置（定格看）*/
+    { "torient",DBG_CMD_TEXT_ORIENT,0 },  /* torient 4     文字方向：0~3 固定 / 4 自动 */
 };
 
 #define VCMD_ALIAS_N  (sizeof(s_alias) / sizeof(s_alias[0]))

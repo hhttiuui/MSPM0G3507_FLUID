@@ -26,12 +26,28 @@
  *
  * ==================== 纵向怎么对 ====================
  *
- *   字库单元 12 宽 × 14 高，其中 CJK 字身占 cell 的 0~11 行，
- *   12~13 行是下伸区（g j p q y 用）。屏幕 16 行，所以：
+ *   字库单元 12 宽 × 14 高，CJK 字身占 cell 的 0~11 行，12~13 行是下伸区。
+ *   **条带里不烘竖直偏移**（glyph 固定在条带行 0..13），偏移在 DrawFrame
+ *   里按当前方向算 —— 因为可用高度会随方向变（16 行 or 15 行）：
  *
- *     条带行 = cell 行 + TEXT_TOP(2)      条带行 2..15 → 屏幕行 3..16
+ *     rot 0/2：可用高 16 → 偏移 2，字身落在 3~14 行（上下各留 2 行）
+ *     rot 1/3：可用高 15 → 偏移 1，字身落在 2~13 行（不裁下伸区）
  *
- *   于是 CJK 字身落在屏幕 3~14 行，上下各留 2 行 —— 正好居中。
+ * ==================== 方向（自动跟随设备摆放）====================
+ *
+ *   设备侧着放时，字也要跟着转，观看者才始终能正着读。方向由重力判定：
+ *
+ *     (ax, ay) ≈ (0, +9.8)  → rot 0  正放
+ *     (+9.8, 0)             → rot 1  顺时针 90°
+ *     (0, -9.8)             → rot 2  倒放
+ *     (-9.8, 0)             → rot 3  逆时针 90°
+ *
+ *   ⚠ 旋转后屏幕的**宽高会换**：应用网格 15 宽 16 高，正放时物理宽 15、
+ *     高 16；侧放时物理宽 16、高 15。所以滚动窗口宽度要跟着 rot 变
+ *     （见 WinWidth()），字高 12 在两种情况下都放得下（最短边 15）。
+ *
+ *   ⚠ 45° 附近两根轴差不多大，判定会来回跳 → 必须"迟滞 + 稳定确认"：
+ *     主导轴要超过次轴 1.4 倍（≈±35° 以内），且新方向连续保持 500 ms。
  *
  * ==================== 帧率 ====================
  *
@@ -48,8 +64,20 @@
 #include "vcmd.h"           /* VCMD_GetString()：text 命令带过来的字符串 */
 #include "wqy12_common.h"   /* 12×12 点阵字库（WQF_Find / WQF_PIXEL）*/
 
-/* 条带行 → 屏幕行：CJK 字身居中 */
-#define TEXT_TOP            2u
+/* ==================== 方向 ====================
+ *
+ * 条带里 glyph 固定在行 0..13（不烘竖直偏移），偏移在 DrawFrame 里按 rot 加：
+ *   rot 0/2 可用高 16 → 偏移 2
+ *   rot 1/3 可用高 15 → 偏移 1
+ */
+#define TEXT_VOFF_EVEN      2u      /* rot 0/2 的竖直偏移 */
+#define TEXT_VOFF_ODD       1u      /* rot 1/3 的竖直偏移 */
+
+/* 自动判定方向：主导轴要超过次轴多少倍才认（1.4 ≈ ±35°，避开 45° 抖动）*/
+#define TEXT_ORIENT_RATIO   _IQ(1.4f)
+
+/* 新方向要连续保持多久才生效（ms）。太短会在 45° 附近来回翻 */
+#define TEXT_ORIENT_HOLD_MS 500u
 
 /* 一帧移动几像素。0 = 定格（配合 tpos 用来静态检查某个位置的字）*/
 #define TEXT_STEP_DEF       1u
@@ -83,6 +111,12 @@ static uint8_t  s_lev  = TEXT_LEV_DEF;
 
 static uint16_t s_cols;         /* 条带实际宽度（像素），0 = 没内容 */
 static uint16_t s_pos;          /* 滚动位置，见 DrawFrame() 的说明 */
+
+/* 方向：0/1/2/3 = 0°/90°/180°/270°，由重力自动判定，也可 torient 手动固定 */
+static uint8_t  s_rot;
+static uint8_t  s_rotCand;      /* 候选方向 */
+static uint32_t s_rotSince;     /* 候选开始稳定的时刻 */
+static uint8_t  s_orientAuto = 1u;   /* 1 = 自动跟随重力（默认）*/
 static uint32_t s_lastMs;
 
 /* ==================== UTF-8 解码 ==================== */
@@ -172,7 +206,7 @@ static void RenderStrip(void)
              * ⚠ 574 字的常用库覆盖不全（实测"温"就没有）。要显示的字提前
              *   用 font/tools/subset_font.py 从母库裁一个专用字库最稳。 */
             for (gy = 3u; gy <= 11u; gy++) {
-                uint16_t py = (uint16_t) (gy + TEXT_TOP);
+                uint16_t py = (uint16_t) gy;
 
                 if (py >= APP_SCRATCH_ROWS) {
                     break;
@@ -191,7 +225,7 @@ static void RenderStrip(void)
             x = (uint16_t) (x + 10u);
         } else {
             for (gy = 0u; gy < (uint8_t) WQF_H; gy++) {
-                uint16_t py = (uint16_t) (gy + TEXT_TOP);
+                uint16_t py = (uint16_t) gy;    /* 不烘偏移，DrawFrame 再加 */
 
                 if (py >= APP_SCRATCH_ROWS) {
                     break;
@@ -221,38 +255,102 @@ static void RenderStrip(void)
     s_cols = x;
 }
 
-/* ==================== 画一帧 ==================== */
-
-/* 滚动位置 s_pos 的含义：
+/* ==================== 画一帧（按方向旋转）====================
  *
- *   屏幕第 x 列（0..14）显示条带第  (s_pos - 15 + x)  列
+ * 物理坐标 (u, v)：u = 观看者看到的横向（阅读方向），v = 观看者看到的纵向。
+ * 应用坐标 (x, y)：固定绑在设备上，x 1..15、y 1..16。
  *
- *   s_pos = 0            → 全都 < 0，屏幕全黑（字刚完全出去）
- *   s_pos = 15           → 条带第 0 列正好落在屏幕最左列（字刚进来）
- *   s_pos = s_cols + 15  → 全都 >= s_cols，屏幕全黑（字完全出去）
+ * 正放时物理宽 15、高 16；侧放时宽 16、高 15（因为应用网格是 15×16，
+ * 面板是 16×15，转置关系见 led_matrix.h）。所以**窗口宽度随 rot 变**。
  *
- * 所以循环范围是 [0, s_cols + 15]，到顶回 0 就是"再滚一遍"。
+ * 四个方向下 (u,v) → (x,y) 的换算 —— 这是最容易写错的地方，逐条推过：
+ *
+ *   rot 0（正放）        ：x = 1+u    y = 1+v
+ *   rot 1（顺 90°，x 朝下）：x = 1+v    y = 16-u
+ *   rot 2（倒放）        ：x = 15-u   y = 16-v
+ *   rot 3（逆 90°，x 朝上）：x = 15-v   y = 1+u
+ *
+ * 滚动位置 s_pos 的含义（uw = 当前窗口宽度）：
+ *
+ *   物理第 u 列显示条带第 (s_pos - uw + u) 列
+ *   s_pos = 0        → 全黑（字刚完全出去）
+ *   s_pos = uw       → 条带第 0 列落在最左（字刚进来）
+ *   s_pos = cols+uw  → 全黑（字完全出去）
  */
+
+/* 当前方向下的窗口宽度（物理横向能放几格）*/
+static uint8_t WinWidth(void)
+{
+    return ((s_rot & 1u) != 0u) ? (uint8_t) LED_PANEL_COLS : (uint8_t) LED_APP_COLS;
+}
+
+/* 当前方向下的窗口高度 */
+static uint8_t WinHeight(void)
+{
+    return ((s_rot & 1u) != 0u) ? (uint8_t) LED_APP_COLS : (uint8_t) LED_APP_ROWS;
+}
+
+/* 竖直偏移：字库单元 14 行，可用高度 16 或 15，各留一点边 */
+static uint8_t WinVOffset(void)
+{
+    return ((s_rot & 1u) != 0u) ? (uint8_t) TEXT_VOFF_ODD : (uint8_t) TEXT_VOFF_EVEN;
+}
+
 static void DrawFrame(void)
 {
-    uint8_t x, y;
+    uint8_t uw = WinWidth();
+    uint8_t vh = WinHeight();
+    uint8_t voff = WinVOffset();
+    uint8_t u, v;
 
     LedMatrix_Clear();
 
     if (s_cols != 0u) {
-        for (x = 0u; x < (uint8_t) LED_APP_COLS; x++) {
+        for (u = 0u; u < uw; u++) {
             /* 用有符号算，负数才是"还没进来" */
-            int32_t sx = (int32_t) s_pos - (int32_t) LED_APP_COLS + (int32_t) x;
+            int32_t sx = (int32_t) s_pos - (int32_t) uw + (int32_t) u;
+            uint16_t bit;
 
             if ((sx < 0) || (sx >= (int32_t) s_cols)) {
                 continue;
             }
+            bit = (uint16_t) (0x80u >> ((uint16_t) sx & 7u));
 
-            for (y = 0u; y < (uint8_t) APP_SCRATCH_ROWS; y++) {
-                if ((s_scratch.text_px[y][(uint16_t) sx >> 3] &
-                     (uint8_t) (0x80u >> ((uint16_t) sx & 7u))) != 0u) {
-                    LedMatrix_SetCellLevel((uint8_t) (x + 1u), (uint8_t) (y + 1u), s_lev);
+            for (v = 0u; v < vh; v++) {
+                /* 条带行 = 物理 v − 竖直偏移；v < voff 时是负数，必须用有符号 */
+                int16_t r = (int16_t) ((int16_t) v - (int16_t) voff);
+                uint8_t x, y;
+
+                if ((r < 0) || (r >= (int16_t) WQF_H)) {
+                    continue;
                 }
+                if ((s_scratch.text_px[r][(uint16_t) sx >> 3] & bit) == 0u) {
+                    continue;
+                }
+
+                switch (s_rot) {
+                    case 0u:                    /* 正放 */
+                        x = (uint8_t) (1u + u);
+                        y = (uint8_t) (1u + v);
+                        break;
+
+                    case 1u:                    /* 顺时针 90°：物理右 = 应用 -y */
+                        x = (uint8_t) (1u + v);
+                        y = (uint8_t) (LED_APP_ROWS - u);
+                        break;
+
+                    case 2u:                    /* 倒放 */
+                        x = (uint8_t) (LED_APP_COLS - u);
+                        y = (uint8_t) (LED_APP_ROWS - v);
+                        break;
+
+                    default:                    /* 逆时针 90°：物理右 = 应用 +y */
+                        x = (uint8_t) (LED_APP_COLS - v);
+                        y = (uint8_t) (1u + u);
+                        break;
+                }
+
+                LedMatrix_SetCellLevel(x, y, s_lev);
             }
         }
     }
@@ -260,13 +358,80 @@ static void DrawFrame(void)
     LedMatrix_Flush();
 }
 
+/* ==================== 方向判定 ==================== */
+
+/* 把 s_pos 钳到当前方向允许的范围内（切方向时窗口宽度变了，不钳会跳）*/
+static void ClampPos(void)
+{
+    uint16_t hi = (uint16_t) (s_cols + WinWidth());
+
+    if (s_pos > hi) {
+        s_pos = hi;
+    }
+}
+
+/* 每帧调一次（不受 s_ms 节拍限制，要跟得上手）。
+ *
+ * 判定规则：
+ *   ① 主导轴必须超过次轴 TEXT_ORIENT_RATIO(1.4) 倍，否则当成"说不清"，
+ *      直接把计时器重置 —— 这就是迟滞，45° 附近不会来回翻
+ *   ② 候选方向要连续保持 TEXT_ORIENT_HOLD_MS(500ms) 才生效
+ *
+ * ⚠ IMU 不可用时（假重力每 2 s 换方向）必须关掉自动，否则字会跟着转圈。
+ */
+static void TrackOrient(const app_in_t *in)
+{
+    int32_t axa, aya;
+    uint8_t c;
+
+    if ((s_orientAuto == 0u) || (dbg.fluid.imu_use == 0u)) {
+        return;
+    }
+
+    axa = (in->ax_slow < 0) ? -(int32_t) in->ax_slow : (int32_t) in->ax_slow;
+    aya = (in->ay_slow < 0) ? -(int32_t) in->ay_slow : (int32_t) in->ay_slow;
+
+    /* ① 两根轴差不多大 → 方向不明，不更新候选 */
+    if ((axa < _IQmpy(aya, TEXT_ORIENT_RATIO)) &&
+        (aya < _IQmpy(axa, TEXT_ORIENT_RATIO))) {
+        s_rotSince = in->now_ms;
+        return;
+    }
+
+    if (aya >= axa) {
+        c = (in->ay_slow >= 0) ? 0u : 2u;
+    } else {
+        c = (in->ax_slow >= 0) ? 1u : 3u;
+    }
+
+    if (c != s_rotCand) {
+        s_rotCand  = c;
+        s_rotSince = in->now_ms;
+        return;
+    }
+    if (c == s_rot) {
+        return;                             /* 已经是它，不用动 */
+    }
+
+    /* ② 稳定够久才真的切 */
+    if ((uint32_t) (in->now_ms - s_rotSince) >= TEXT_ORIENT_HOLD_MS) {
+        s_rot = c;
+        dbg.app.rot = s_rot;
+        ClampPos();
+        DrawFrame();
+    }
+}
+
 /* 重画条带 + 从"字刚好在最左边"开始，并立刻出一帧。
  * 文字/参数改完之后调它，改完马上能看到，不用等下一次 tick。 */
 static void Restart(void)
 {
     RenderStrip();
-    s_pos    = (uint16_t) LED_APP_COLS;   /* 一进来就能看见字，不是一片黑 */
-    s_lastMs = tick_ms;
+    s_pos      = (uint16_t) WinWidth();   /* 一进来就能看见字，不是一片黑 */
+    s_lastMs   = tick_ms;
+    s_rotSince = tick_ms;
+    s_rotCand  = s_rot;
+    dbg.app.rot = s_rot;
     DrawFrame();
 }
 
@@ -286,6 +451,9 @@ void TextScene_Exit(void)
 
 void TextScene_Tick(const app_in_t *in)
 {
+    /* 方向判定每帧都跑（不受 s_ms 节拍限制）—— 侧过来要马上有反应 */
+    TrackOrient(in);
+
     if (s_cols == 0u) {
         return;                             /* 没字可滚 */
     }
@@ -301,7 +469,7 @@ void TextScene_Tick(const app_in_t *in)
 
     s_pos = (uint16_t) (s_pos + s_step);
 
-    if (s_pos >= (uint16_t) (s_cols + LED_APP_COLS)) {
+    if (s_pos >= (uint16_t) (s_cols + WinWidth())) {
         s_pos = 0u;                         /* 整条完全滚出去之后从头再来 */
     }
 
@@ -369,7 +537,7 @@ uint8_t TextScene_Cmd(uint16_t id, const int32_t *arg)
             /* 直接跳到某个滚动位置并重画 —— 配合 `tstep 0` 定格检查。
              * 范围 0 ~ cols+15，超出按边界截。 */
             if (s_cols != 0u) {
-                int32_t lim = (int32_t) s_cols + (int32_t) LED_APP_COLS;
+                int32_t lim = (int32_t) s_cols + (int32_t) WinWidth();
 
                 if (arg[0] < 0) {
                     s_pos = 0u;
@@ -379,6 +547,27 @@ uint8_t TextScene_Cmd(uint16_t id, const int32_t *arg)
                     s_pos = (uint16_t) arg[0];
                 }
                 DrawFrame();
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_TEXT_ORIENT:
+            /* torient 0~3：手动固定方向（锁死，不再跟重力）
+             * torient 4  ：恢复自动跟随
+             * 板子固定安装后锁死比较稳，免得你转个角度看它就跟着翻。 */
+            if ((arg[0] >= 0) && (arg[0] <= 3)) {
+                s_orientAuto = 0u;
+                if (s_rot != (uint8_t) arg[0]) {
+                    s_rot = (uint8_t) arg[0];
+                    dbg.app.rot = s_rot;
+                    ClampPos();
+                }
+                DrawFrame();
+            } else if (arg[0] == 4) {
+                s_orientAuto = 1u;
+                s_rotCand  = s_rot;
+                s_rotSince = tick_ms;
             } else {
                 dbg.cmd.result = 2u;
             }
