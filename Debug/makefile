@@ -32,7 +32,7 @@ ORDERED_OBJS += \
 "./hardware/lsm6ds3trc.o" \
 "./hardware/power.o" \
 "./hardware/scene_still.o" \
-"./hardware/scene_text.o"  \
+"./hardware/scene_text.o" \
 "./hardware/vcmd.o" \
 "./hardware/vofa.o" \
 $(GEN_CMDS__FLAG) \

@@ -139,6 +139,37 @@ uint8_t StillScene_Cmd(uint16_t id, const int32_t *arg)
             }
             return 1u;
 
+        case DBG_CMD_LED_PAT:
+            /* 方向测试图。用途：确认"应用坐标 (x,y) 在面板上到底朝哪"。
+             *
+             * 画的是：四边外框 + **左上角内侧 2×2 实心块**。
+             * 判断方法：实心块应该出现在**左上角**。
+             *   跑到右上 → LED_ORIENT_FLIP_X 反了
+             *   跑到左下 → LED_ORIENT_FLIP_Y 反了
+             *   跑到右下 → 两个都反了
+             *   外框长宽比看着"高比宽大"→ 屏幕是竖的，正常（应用网格 15 宽 16 高）
+             *
+             * ⚠ 文字看不清时先发这个：如果 2×2 块不在左上角，说明整个应用坐标系
+             *   和面板对不上，那不是文字场景的问题，是 led_matrix.h 的方向开关。 */
+            LedMatrix_Clear();
+
+            for (x = 1u; x <= LED_APP_COLS; x++) {
+                LedMatrix_SetCellLevel(x, 1u, 255u);
+                LedMatrix_SetCellLevel(x, (uint8_t) LED_APP_ROWS, 255u);
+            }
+            for (y = 1u; y <= LED_APP_ROWS; y++) {
+                LedMatrix_SetCellLevel(1u, y, 255u);
+                LedMatrix_SetCellLevel((uint8_t) LED_APP_COLS, y, 255u);
+            }
+
+            LedMatrix_SetCellLevel(2u, 2u, 255u);
+            LedMatrix_SetCellLevel(3u, 2u, 255u);
+            LedMatrix_SetCellLevel(2u, 3u, 255u);
+            LedMatrix_SetCellLevel(3u, 3u, 255u);
+
+            LedMatrix_Flush();
+            return 1u;
+
         case DBG_CMD_LED_RAMP:
             DrawRamp();
             return 1u;

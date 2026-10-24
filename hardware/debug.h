@@ -328,6 +328,7 @@ typedef struct {
 #define DBG_CMD_LED_LOCK            0x0207u  /* arg[0]: 1=冻结流体渲染 */
 #define DBG_CMD_LED_RAMP_GAMMA      0x0208u  /* 画 gamma2.2 校正的 14 级阶梯（观感验收用）*/
 #define DBG_CMD_LED_GAMMA           0x0209u  /* arg[0]: 1 = 流体渲染走 gamma2.2 表 */
+#define DBG_CMD_LED_PAT             0x020Au  /* 方向测试图：外框 + 左上角 2×2 实心块 */
 
 /* 0x03xx = 场景（app.c）*/
 #define DBG_CMD_APP_MODE            0x0300u  /* arg[0] = 场景号（0 流体 / 1 静态图）*/
@@ -339,6 +340,7 @@ typedef struct {
 #define DBG_CMD_TEXT_STEP           0x0401u  /* arg[0]: 每帧移动像素 1~8 */
 #define DBG_CMD_TEXT_MS             0x0402u  /* arg[0]: 帧间隔 ms 10~500 */
 #define DBG_CMD_TEXT_LEV            0x0403u  /* arg[0]: 文字亮度 0~255 */
+#define DBG_CMD_TEXT_POS            0x0404u  /* arg[0]: 直接跳到滚动位置（定格看）*/
 
 /* 场景框架的观测量。切没切成功、切了几次，看这里最直接。 */
 typedef struct {

@@ -74,6 +74,7 @@ static const vcmd_alias_t s_alias[] = {
     { "rampg",  DBG_CMD_LED_RAMP_GAMMA, 0 },   /* rampg         14 级 gamma 阶梯（看观感）*/
     { "lock",   DBG_CMD_LED_LOCK, 0 },   /* lock 1        冻结流体渲染 */
     { "gam",    DBG_CMD_LED_GAMMA, 0 },   /* gam 1         流体渲染走 gamma2.2 */
+    { "pat",    DBG_CMD_LED_PAT,   0 },   /* pat           方向测试图 */
 
     /* 场景切换 */
     { "mode",   DBG_CMD_APP_MODE, 0 },   /* mode 1        切到指定场景 */
@@ -85,6 +86,7 @@ static const vcmd_alias_t s_alias[] = {
     { "tstep",  DBG_CMD_TEXT_STEP, 0 },   /* tstep 1       每帧移动像素 1~8 */
     { "tms",    DBG_CMD_TEXT_MS,   0 },   /* tms 40        帧间隔 ms */
     { "tlev",   DBG_CMD_TEXT_LEV,  0 },   /* tlev 255      文字亮度 */
+    { "tpos",   DBG_CMD_TEXT_POS,  0 },   /* tpos 30       跳到滚动位置（定格看）*/
 };
 
 #define VCMD_ALIAS_N  (sizeof(s_alias) / sizeof(s_alias[0]))

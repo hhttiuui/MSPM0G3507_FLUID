@@ -51,9 +51,9 @@
 /* 条带行 → 屏幕行：CJK 字身居中 */
 #define TEXT_TOP            2u
 
-/* 一帧移动几像素（1 = 最顺滑）*/
+/* 一帧移动几像素。0 = 定格（配合 tpos 用来静态检查某个位置的字）*/
 #define TEXT_STEP_DEF       1u
-#define TEXT_STEP_MIN       1u
+#define TEXT_STEP_MIN       0u
 #define TEXT_STEP_MAX       8u
 
 /* 两帧间隔（ms）。40 ms = 25 fps；调小更顺但更费 CPU */
@@ -295,6 +295,10 @@ void TextScene_Tick(const app_in_t *in)
     }
     s_lastMs = in->now_ms;
 
+    if (s_step == 0u) {
+        return;                             /* tstep 0 = 定格，不推进 */
+    }
+
     s_pos = (uint16_t) (s_pos + s_step);
 
     if (s_pos >= (uint16_t) (s_cols + LED_APP_COLS)) {
@@ -356,6 +360,25 @@ uint8_t TextScene_Cmd(uint16_t id, const int32_t *arg)
             if ((arg[0] >= (int32_t) TEXT_MS_MIN) &&
                 (arg[0] <= (int32_t) TEXT_MS_MAX)) {
                 s_ms = (uint16_t) arg[0];
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_TEXT_POS:
+            /* 直接跳到某个滚动位置并重画 —— 配合 `tstep 0` 定格检查。
+             * 范围 0 ~ cols+15，超出按边界截。 */
+            if (s_cols != 0u) {
+                int32_t lim = (int32_t) s_cols + (int32_t) LED_APP_COLS;
+
+                if (arg[0] < 0) {
+                    s_pos = 0u;
+                } else if (arg[0] > lim) {
+                    s_pos = (uint16_t) lim;
+                } else {
+                    s_pos = (uint16_t) arg[0];
+                }
+                DrawFrame();
             } else {
                 dbg.cmd.result = 2u;
             }

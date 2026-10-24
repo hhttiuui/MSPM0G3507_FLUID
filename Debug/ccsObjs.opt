@@ -20,6 +20,7 @@
 "./hardware/lsm6ds3trc.o"
 "./hardware/power.o"
 "./hardware/scene_still.o"
+"./hardware/scene_text.o"
 "./hardware/vcmd.o"
 "./hardware/vofa.o"
 -l"./device_linker.cmd"
