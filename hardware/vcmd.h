@@ -52,4 +52,11 @@ void VCMD_Init(void);
 /* 主循环每圈调一次。没有数据时只做两次寄存器读。 */
 void VCMD_Tick(void);
 
+/* 最近一次带字符串的命令（目前只有 `text`）的参数。
+ *
+ * ⚠ 只在**处理那条命令的 cmd() 里**读才有意义 —— 它是"下一条带字符串的命令
+ *   会覆盖"的共享缓冲，别在别的地方缓存这个指针。
+ * 没收到过就返回空串（不是 NULL）。 */
+const char *VCMD_GetString(void);
+
 #endif /* VCMD_H */

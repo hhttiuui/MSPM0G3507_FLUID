@@ -82,6 +82,29 @@ typedef struct {
     uint8_t (*cmd)(uint16_t id, const int32_t *arg);
 } scene_t;
 
+/* ==================== 共享 scratch ====================
+ *
+ * 小场景的**大块像素缓冲**都放这里，同一时刻只有一个成员有效。
+ * 理由：SRAM 只剩 ~9 KB，而文字条带要 512 B、蛇身要几十字节 ——
+ * 每个场景各占一份的话，加三四个场景就吃光了。
+ *
+ * 规矩：
+ *   · 只放"大块缓冲"。**字符串、步进、亮度这些参数不要放进来** ——
+ *     它们很小，而且切走再切回来应该还在（放 union 里会被别的场景踩掉）。
+ *   · 场景的 enter() 必须自己初始化自己那块，不能假设是干净的。
+ *   · 流体不进这个 union —— 它 20 KB 常驻，塞进来会把 union 撑到 20 KB。
+ */
+#define APP_SCRATCH_ROW_BYTES   (32u)     /* 每行 32 字节 = 256 像素宽 */
+#define APP_SCRATCH_ROWS        (16u)
+
+typedef union {
+    uint8_t text_px[APP_SCRATCH_ROWS][APP_SCRATCH_ROW_BYTES];  /* 1bpp 文字条带 */
+    uint8_t snake_body[64];                                    /* 预留：贪吃蛇 */
+    int8_t  ball[4];                                           /* 预留：平衡球 */
+} app_scratch_t;
+
+extern app_scratch_t s_scratch;
+
 /* 进入主循环（含全部初始化），永不返回 */
 void App_Run(void);
 

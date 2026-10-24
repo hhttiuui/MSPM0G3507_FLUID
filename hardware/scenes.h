@@ -8,6 +8,7 @@
  * 现有场景：
  *   0 流体     fluid_demo.c    算法 → 密度 → 灰度 → 点阵（IMU 重力驱动）
  *   1 静态图   scene_still.c   亮度阶梯 / 单点 / 填充，亮度标定用
+ *   2 文字滚动 scene_text.c    12×12 点阵字库 → 条带 → 横向滚动
  */
 #ifndef __SCENES_H
 #define __SCENES_H
@@ -30,5 +31,19 @@ void    StillScene_Enter(void);
 void    StillScene_Tick(const app_in_t *in);
 void    StillScene_Exit(void);
 uint8_t StillScene_Cmd(uint16_t id, const int32_t *arg);
+
+/* ---------------- 2 文字滚动 ----------------
+ *
+ * 脱机显示中文：用 hardware/wqy12_common.h 的 12×12 点阵字库渲染成 1bpp 条带
+ * （放 s_scratch.text_px），每帧截 15 列宽的窗口刷屏。
+ *
+ * 命令：text <字符串> / tstep <1-8> / tms <10-500> / tlev <0-255>
+ * 文字和参数存在本场景的静态区，**切走再切回来还在**；只有条带在 union 里，
+ * 切回来会重画。
+ */
+void    TextScene_Enter(void);
+void    TextScene_Tick(const app_in_t *in);
+void    TextScene_Exit(void);
+uint8_t TextScene_Cmd(uint16_t id, const int32_t *arg);
 
 #endif /* __SCENES_H */

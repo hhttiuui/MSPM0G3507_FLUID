@@ -156,6 +156,9 @@
 /* 加速度计 1g 对应的 mg 值（换算成模拟单位 9.8 用）*/
 #define APP_MG_PER_G            1000
 
+/* 小场景共用的像素缓冲。定义放这里，声明在 app.h（见那里的规矩）。 */
+app_scratch_t s_scratch;
+
 /* ==================== 场景表 ====================
  *
  * 顺序即场景号（串口 `mode <n>` 用这个编号）。加场景 = 加一行 + 改 scenes.h。
@@ -163,6 +166,7 @@
 static const scene_t s_scenes[] = {
     /* 0 */ { FluidScene_Enter, FluidScene_Tick, FluidScene_Exit, FluidScene_Cmd },
     /* 1 */ { StillScene_Enter, StillScene_Tick, StillScene_Exit, StillScene_Cmd },
+    /* 2 */ { TextScene_Enter,  TextScene_Tick,  TextScene_Exit,  TextScene_Cmd  },
 };
 
 #define SCENE_COUNT     ((uint8_t) (sizeof(s_scenes) / sizeof(s_scenes[0])))

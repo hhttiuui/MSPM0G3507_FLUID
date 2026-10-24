@@ -334,6 +334,12 @@ typedef struct {
 #define DBG_CMD_APP_NEXT            0x0301u  /* 下一个场景（循环）*/
 #define DBG_CMD_APP_PREV            0x0302u  /* 上一个场景（循环）*/
 
+/* 0x04xx = 场景 2：文字滚动。字符串走 VCMD_GetString()，不占邮箱参数 */
+#define DBG_CMD_TEXT_SET            0x0400u  /* text <UTF-8 字符串> */
+#define DBG_CMD_TEXT_STEP           0x0401u  /* arg[0]: 每帧移动像素 1~8 */
+#define DBG_CMD_TEXT_MS             0x0402u  /* arg[0]: 帧间隔 ms 10~500 */
+#define DBG_CMD_TEXT_LEV            0x0403u  /* arg[0]: 文字亮度 0~255 */
+
 /* 场景框架的观测量。切没切成功、切了几次，看这里最直接。 */
 typedef struct {
     uint8_t scene;          /* 当前场景号 */
