@@ -44,8 +44,19 @@
  * 这样板子倾斜时液体流向才和手机上的直觉一致。
  * ⚠ 只影响 LedMatrix_SetCell()，LedMatrix_SetPanel() 永远是面板物理坐标。 */
 #define LED_ORIENT_SWAP_XY  1u      /* 1 = 面板 16 宽 ↔ 应用 16 高（转置） */
-#define LED_ORIENT_FLIP_X   0u      /* 1 = 左右镜像（沿面板列方向翻） */
-#define LED_ORIENT_FLIP_Y   0u      /* 1 = 上下镜像（沿面板行方向翻） */
+
+/* ⚠ 这两个名字是按**面板**坐标命的名，不是按屏幕方向 —— SWAP_XY=1 时正好反过来：
+ *
+ *   LED_ORIENT_FLIP_X → 翻的是**面板列**(c)，而 c = 应用 y ⇒ 屏幕上表现为**上下**镜像
+ *   LED_ORIENT_FLIP_Y → 翻的是**面板行**(r)，而 r = 应用 x ⇒ 屏幕上表现为**左右**镜像
+ *
+ * 所以：**文字左右镜像 → 设 FLIP_Y**，文字上下颠倒 → 设 FLIP_X。
+ * （原来这里注释写反了，按名字去调会调到另一根轴上去。）
+ *
+ * 2026-10-24 实测：文字是左右镜像的，所以 FLIP_Y = 1。
+ * ⚠ 改这一行必须**同时**改 app.c 里对应的 IMU 轴向符号 —— 见那里的注释。 */
+#define LED_ORIENT_FLIP_X   0u      /* 1 = 上下镜像（翻面板列 = 应用 y） */
+#define LED_ORIENT_FLIP_Y   1u      /* 1 = 左右镜像（翻面板行 = 应用 x） */
 
 /* 初始化芯片并清屏。内部会调 HT16D33A_Init()，所以不用再单独调它。 */
 void LedMatrix_Init(void);
