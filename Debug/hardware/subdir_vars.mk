@@ -19,7 +19,9 @@ C_SRCS += \
 ../hardware/lsm6ds3trc.c \
 ../hardware/power.c \
 ../hardware/vcmd.c \
-../hardware/vofa.c 
+../hardware/vofa.c \
+../hardware/app.c \
+../hardware/scene_still.c 
 
 C_DEPS += \
 ./hardware/battery.d \
@@ -35,7 +37,9 @@ C_DEPS += \
 ./hardware/lsm6ds3trc.d \
 ./hardware/power.d \
 ./hardware/vcmd.d \
-./hardware/vofa.d 
+./hardware/vofa.d \
+./hardware/app.d \
+./hardware/scene_still.d 
 
 OBJS += \
 ./hardware/battery.o \
@@ -51,7 +55,9 @@ OBJS += \
 ./hardware/lsm6ds3trc.o \
 ./hardware/power.o \
 ./hardware/vcmd.o \
-./hardware/vofa.o 
+./hardware/vofa.o \
+./hardware/app.o \
+./hardware/scene_still.o 
 
 OBJS__QUOTED += \
 "hardware\battery.o" \
@@ -67,7 +73,9 @@ OBJS__QUOTED += \
 "hardware\lsm6ds3trc.o" \
 "hardware\power.o" \
 "hardware\vcmd.o" \
-"hardware\vofa.o" 
+"hardware\vofa.o" \
+"hardware\app.o" \
+"hardware\scene_still.o" 
 
 C_DEPS__QUOTED += \
 "hardware\battery.d" \
@@ -83,7 +91,9 @@ C_DEPS__QUOTED += \
 "hardware\lsm6ds3trc.d" \
 "hardware\power.d" \
 "hardware\vcmd.d" \
-"hardware\vofa.d" 
+"hardware\vofa.d" \
+"hardware\app.d" \
+"hardware\scene_still.d" 
 
 C_SRCS__QUOTED += \
 "../hardware/battery.c" \
@@ -99,6 +109,8 @@ C_SRCS__QUOTED += \
 "../hardware/lsm6ds3trc.c" \
 "../hardware/power.c" \
 "../hardware/vcmd.c" \
-"../hardware/vofa.c" 
+"../hardware/vofa.c" \
+"../hardware/app.c" \
+"../hardware/scene_still.c" 
 
 

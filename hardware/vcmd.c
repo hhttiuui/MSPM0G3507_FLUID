@@ -8,7 +8,7 @@
  *
  * 解析本身不碰任何外设和控制逻辑，只把文本翻译成"命令号 + 4 个整数参数"，
  * 所以新增命令只需要在 debug.h 里加一行 #define + 这里加一条别名，
- * 执行代码在 fluid_demo.c 的 FluidDemo_CmdTask()。
+ * 执行代码在 app.c 的 App_CmdTask()（全局命令）和当前场景的 cmd()（场景命令）。
  */
 
 #include "vcmd.h"
@@ -64,6 +64,11 @@ static const vcmd_alias_t s_alias[] = {
     { "rampg",  DBG_CMD_LED_RAMP_GAMMA },   /* rampg         14 级 gamma 阶梯（看观感）*/
     { "lock",   DBG_CMD_LED_LOCK       },   /* lock 1        冻结流体渲染 */
     { "gam",    DBG_CMD_LED_GAMMA      },   /* gam 1         流体渲染走 gamma2.2 */
+
+    /* 场景切换 */
+    { "mode",   DBG_CMD_APP_MODE       },   /* mode 1        切到指定场景 */
+    { "next",   DBG_CMD_APP_NEXT       },   /* next          下一个场景 */
+    { "prev",   DBG_CMD_APP_PREV       },   /* prev          上一个场景 */
 };
 
 #define VCMD_ALIAS_N  (sizeof(s_alias) / sizeof(s_alias[0]))

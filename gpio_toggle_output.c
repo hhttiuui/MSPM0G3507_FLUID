@@ -48,7 +48,7 @@
 #include "clock.h"
 #include "imu_selftest.h"
 #include "led_show.h"
-#include "fluid_demo.h"
+#include "app.h"            /* 场景框架：App_Run（流体 / 静态图 等）*/
 #include "battery.h"
 #include "key.h"
 #include "power.h"
@@ -133,14 +133,16 @@ int main(void)
     NVIC_ClearPendingIRQ(TIMER_0_INST_INT_IRQN);
     NVIC_EnableIRQ(TIMER_0_INST_INT_IRQN);   /* TIMA0 5ms：按键扫描 + 一键开关机 */
 
-    /* 两个程序互斥，优先级：LED 演示 > 陀螺仪自检 > 流体 Demo。
+    /* 三个程序互斥，优先级：LED 演示 > 陀螺仪自检 > 场景框架。
      * 想跑哪个就把对应的 *_ENABLE 置 1，并把优先级更高的那个关掉。 */
 #if LED_SHOW_ENABLE
     LedShow_Run();              /* LED 点阵综合演示（见 hardware/led_show.c），不返回 */
 #elif IMU_SELFTEST_ENABLE
     ImuSelfTest_Run();          /* LSM6DS3TR-C 读取自检（无屏，观测量都在 dbg 里），不返回 */
 #else
-    FluidDemo_Run();            /* 流体模拟 → LED 点阵（暂用假重力），不返回 */
+    /* 场景框架（hardware/app.c）：内部管着流体 / 静态图等场景的切换。
+     * 按键 USER2 = 下一个场景，USER3 = 上一个，串口 `next` / `prev` / `mode <n>`。 */
+    App_Run();
 #endif
 
     return 0;

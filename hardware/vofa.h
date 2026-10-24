@@ -41,8 +41,9 @@
 #define VOFA_CH_BAT_MV     5u   /* 电池电压 mV（0 = 读取失败）*/
 #define VOFA_CH_SHAKE      6u   /* 窗口内摇晃峰值 ×10 */
 #define VOFA_CH_DENS_MAX   7u   /* 窗口内最大密度 ×1000 */
+#define VOFA_CH_SCENE      8u   /* 当前场景号（0 流体 / 1 静态图）*/
 
-#define VOFA_CH_ALL        0x00FFu
+#define VOFA_CH_ALL        0x01FFu  /* 9 路全开，mask 取值 0~511 */
 #define VOFA_CH_DEFAULT    0x000Fu  /* 默认只开前 4 路：sim/fps/ax/ay */
 
 /* ---- 分频：0 = 关闭；n = 每 2^n 帧发一帧 ----
@@ -59,7 +60,7 @@ void VOFA_Tick(void);
 /* 设置分频：0 = 关闭，1~7 = 每 2^n 帧一帧。 */
 void VOFA_SetDivShift(uint32_t n);
 
-/* 设置通道掩码：bit0~7 对应 VOFA_CH_*。
+/* 设置通道掩码：bit0~8 对应 VOFA_CH_*（共 9 路，取值 0~511）。
  * ⚠ 改了掩码以后 VOFA+ 里的通道数要跟着改（它按逗号个数解析）。 */
 void VOFA_SetMask(uint32_t mask);
 

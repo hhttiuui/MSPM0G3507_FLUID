@@ -79,7 +79,7 @@ void FaultCapture(uint32_t *sp)
 /* ==================== 命令邮箱 ====================
  *
  * 串口（vcmd.c）和调试器都只负责"投递"，真正执行在主循环里
- * （fluid_demo.c 的 FluidDemo_CmdTask）。这样命令生效的时机是固定的，
+ * （app.c 的 App_CmdTask）。这样命令生效的时机是固定的，
  * 不会在 SPI 推屏中途改显示状态。
  *
  * ⚠ 顺序不能改：arg 先写、id 次之、pending 最后置位才算"提交完成"。

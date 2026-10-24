@@ -171,7 +171,7 @@ typedef struct {
      * ax10/ay10 是**两条通路相加后**的总量（也就是真正喂给流体的值），
      * 下面 4 个是拆开看的两条通路：
      *   slow = 重力 / 倾角分量（慢通路）
-     *   fast = 摇晃 / 惯性分量（快通路，**已含 FLUID_SHAKE_GAIN**）
+     *   fast = 摇晃 / 惯性分量（快通路，**已含 APP_SHAKE_GAIN**）
      * 判读：静止时 slow ≈ ±98（1g 向下）、fast ≈ 0；
      *       左右摇时 fast 大幅摆动（几十~几百）、slow 基本不动。
      * ⚠ 只在"真实 IMU"模式下更新；假重力模式不走分解，这 4 个一直是 0。 */
@@ -329,6 +329,19 @@ typedef struct {
 #define DBG_CMD_LED_RAMP_GAMMA      0x0208u  /* 画 gamma2.2 校正的 14 级阶梯（观感验收用）*/
 #define DBG_CMD_LED_GAMMA           0x0209u  /* arg[0]: 1 = 流体渲染走 gamma2.2 表 */
 
+/* 0x03xx = 场景（app.c）*/
+#define DBG_CMD_APP_MODE            0x0300u  /* arg[0] = 场景号（0 流体 / 1 静态图）*/
+#define DBG_CMD_APP_NEXT            0x0301u  /* 下一个场景（循环）*/
+#define DBG_CMD_APP_PREV            0x0302u  /* 上一个场景（循环）*/
+
+/* 场景框架的观测量。切没切成功、切了几次，看这里最直接。 */
+typedef struct {
+    uint8_t scene;          /* 当前场景号 */
+    uint8_t scene_cnt;      /* 场景总数 */
+    uint8_t switches;       /* 累计切换次数（含开机那次）*/
+    uint8_t reserved;
+} dbg_app_t;
+
 typedef struct {
     dbg_who_t   who;
     dbg_spi_t   spi;
@@ -343,6 +356,7 @@ typedef struct {
     dbg_bat_t   bat;
     dbg_uart_t  uart;
     dbg_cmd_t   cmd;
+    dbg_app_t   app;
     dbg_fault_t fault;
     dbg_test_t  test;
 } dbg_t;
