@@ -17,6 +17,7 @@
 #include "clock.h"          /* tick_ms：二进制半包超时用 */
 #include "app.h"            /* App_ShowDirectFrame() */
 #include "glyph_store.h"    /* 自定义滚动字形：接收 → 校验 → 存 Flash */
+#include "scenes.h"         /* FrameScene_StoreBegin/Data/End（图片槽）*/
 #include "ti_msp_dl_config.h"
 
 /* 一行最长字节数。
@@ -99,6 +100,59 @@ static void vcmd_bin_dispatch(void)
     uint8_t len   = s_bin[5];
     uint8_t bpp   = (uint8_t) (flags & 0x03u);
     const uint8_t *src = &s_bin[VCMD_BIN_HDR];
+
+    /* ---- 图片/动图槽：三包协议（阶段 3）----
+     * BEGIN : A5|5|slot|frames.lo|frames.hi|len=4| bpp, fps.lo, fps.hi, gain
+     * DATA  : A5|6|seq |0   |0    |len   | 帧数据（len 必须是 8 的倍数）
+     * END   : A5|7|0   |0   |0    |len=2 | crc.lo, crc.hi
+     *
+     * 和字形三包一个套路：先擦头（槽失效）→ 边收边写 → CRC 通过才写头。
+     * DATA 一包一帧最省事：8bit = 240 B，4bit = 120 B，都 ≤ 248 且是 8 的倍数。
+     */
+    if ((ver >= 5u) && (ver <= 7u)) {
+        if (ver == 5u) {                        /* BEGIN */
+            uint16_t frames;
+            uint16_t fps;
+
+            if (len != 4u) {
+                dbg.uart.bad++;
+                return;
+            }
+
+            frames = (uint16_t) ((uint16_t) s_bin[3] | ((uint16_t) s_bin[4] << 8));
+            fps    = (uint16_t) ((uint16_t) s_bin[7] | ((uint16_t) s_bin[8] << 8));
+
+            if (FrameScene_StoreBegin(s_bin[2], s_bin[6], frames, fps, s_bin[9]) == 0u) {
+                dbg.uart.bad++;
+            } else {
+                dbg.uart.bin_ok++;
+            }
+            return;
+        }
+
+        if (ver == 6u) {                        /* DATA */
+            if (FrameScene_StoreData(src, len) == 0u) {
+                dbg.uart.bad++;
+            } else {
+                dbg.uart.bin_ok++;
+            }
+            return;
+        }
+
+        /* ver == 7：END */
+        {
+            uint16_t crc = (uint16_t) ((uint16_t) s_bin[6] |
+                                       ((uint16_t) s_bin[7] << 8));
+
+            if ((len != 2u) || (FrameScene_StoreEnd(crc) == 0u)) {
+                dbg.uart.bad++;
+            } else {
+                dbg.uart.bin_ok++;
+                dbg.uart.cmds++;
+            }
+        }
+        return;
+    }
 
     /* ---- 自定义滚动字形：三包协议（接收 → 校验 → 存 Flash）----
      * BEGIN : A5|2|count|spacing|flags|len=4| step, ms.lo, ms.hi, lev
@@ -284,6 +338,23 @@ static const vcmd_alias_t s_alias[] = {
     { "tlev",   DBG_CMD_TEXT_LEV,  0 },   /* tlev 255      文字亮度 */
     { "tpos",   DBG_CMD_TEXT_POS,  0 },   /* tpos 30       跳到滚动位置（定格看）*/
     { "torient",DBG_CMD_TEXT_ORIENT,0 },  /* torient 4     文字方向：0~3 固定 / 4 自动 */
+
+    /* ---- 文字预设（存 Flash，PC 端是主、板子是副本）---- */
+    { "tpclr",  DBG_CMD_TEXT_TPCLR, 0 },  /* tpclr         清空预设区 */
+    { "tpadd",  DBG_CMD_TEXT_TPADD, 0 },  /* tpadd         把当前文字+参数追加成一条 */
+    /* ⚠ 第三列是 "整段当字符串" 的标志，不是参数个数！
+     *   写成 1 会让 vcmd 把行尾当字符串塞进 s_str，数字参数全部丢失 ——
+     *   tinv/tpload 一开始就是这么写错的：arg[0] 恒为 0，反色永远关着、
+     *   tpload 永远跳到第 0 条。数字类命令一律写 0（对照 tlev/torient）。 */
+    { "tpload", DBG_CMD_TEXT_TPLOAD,0 },  /* tpload 2      应用第 2 条预设 */
+    { "tinv",   DBG_CMD_TEXT_INV,   0 },  /* tinv 1        文字反色（亮底黑字）*/
+
+    /* ---- 几何动画（场景 4）---- */
+    { "ganim",  DBG_CMD_GEOM_ANIM,  0 },  /* ganim 1       0 弹跳球 / 1 旋转立方体 */
+    { "gtail",  DBG_CMD_GEOM_TAIL,  0 },  /* gtail 2       拖尾 0~8，0 = 不拖尾 */
+    { "gball",  DBG_CMD_GEOM_BALL,  0 },  /* gball 3       球半径 1~6 像素 */
+    { "gkick",  DBG_CMD_GEOM_KICK,  0 },  /* gkick 3       碰边弹起速度 1~8 px/帧 */
+    { "gdamp",  DBG_CMD_GEOM_DAMP,  0 },  /* gdamp 2       水平阻尼 0~8，0 = 关 */
 };
 
 #define VCMD_ALIAS_N  (sizeof(s_alias) / sizeof(s_alias[0]))

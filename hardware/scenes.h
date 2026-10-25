@@ -62,6 +62,19 @@ uint8_t TextScene_LoadStrip(const uint8_t *bits, uint16_t cols);
  * 超出范围的参数会被忽略（保持当前值）。 */
 void    TextScene_SetScroll(uint8_t step, uint16_t ms, uint8_t lev);
 
+/* ---------------- 文字预设（存 Flash，PC 端是主、板子是副本）----------------
+ *
+ * 上位机流程：`tpclr` 清空 → 对每一组文字调 text/tstep/tms/tlev/torient →
+ * 各发一条 `tpadd`。板子只做顺序追加，不擦单条（flash 只能整扇区擦）。
+ *
+ * 与两级按键的关系：文字大类（ROUTE_CAT_TEXT）的项数 = StoreCount()；
+ * 某项被选中时调用 StoreApply(item) 把文字和参数一起套上去。
+ */
+uint8_t TextScene_StoreCount(void);          /* 当前存了几条（0 = 空）*/
+uint8_t TextScene_StoreClear(void);          /* 擦空整块并写头，返回 1 = 成功 */
+uint8_t TextScene_StoreAdd(void);            /* 追加当前文字+参数，返回 1 = 成功 */
+uint8_t TextScene_StoreApply(uint8_t i);     /* 应用第 i 条，返回 1 = 成功 */
+
 /* ---------------- 3 单帧画面 ----------------
  *
  * 上位机直显：240 字节（行优先 idx = row×15 + col，值 = 亮度 0~255）。
@@ -73,5 +86,33 @@ void    FrameScene_Enter(void);
 void    FrameScene_Tick(const app_in_t *in);
 void    FrameScene_Exit(void);
 void    FrameScene_SetPixels(const uint8_t *px);
+
+/* ---------------- 图片/动图槽（阶段 3，存 Flash）----------------
+ *
+ * 槽 0 = FLASH_REG_ANIM0（16 KB），槽 1 = FLASH_REG_ANIM1（8 KB）；
+ * 每个槽头部独占 1 KB，数据紧跟其后。位深 8bit（240 B/帧）或 4bit（120 B/帧）。
+ * 上传走 vcmd 的 ver 5/6/7 三包：BEGIN → DATA… → END（头部最后写）。
+ */
+uint8_t FrameScene_SlotCount(void);          /* 有几个有效槽 */
+uint8_t FrameScene_PlaySlot(uint8_t idx);    /* 播第 idx 个**有效槽**（0 基）*/
+
+uint8_t FrameScene_StoreBegin(uint8_t slot, uint8_t bpp, uint16_t frames,
+                              uint16_t fpsX10, uint8_t gain);
+uint8_t FrameScene_StoreData(const uint8_t *p, uint8_t len);   /* len 必须是 8 的倍数 */
+uint8_t FrameScene_StoreEnd(uint16_t crc);
+
+/* ---------------- 4 几何动画（阶段 4）----------------
+ *
+ * 一张 240 B 灰度缓冲 + 绘制原语 + 每帧衰减（拖尾），三个内置动画：
+ *   0 弹跳球 / 1 旋转立方体 / 2 等离子
+ * 纯代码、不碰 Flash；实现放在 scene_still.c（本工程不便新增 .c，见该文件注释）。
+ */
+void    GeomScene_Enter(void);
+void    GeomScene_Tick(const app_in_t *in);
+void    GeomScene_Exit(void);
+uint8_t GeomScene_Cmd(uint16_t id, const int32_t *arg);
+
+/* 直接选第 n 个动画（路由切换用），n = 0..2 */
+void    GeomScene_Select(uint8_t n);
 
 #endif /* __SCENES_H */

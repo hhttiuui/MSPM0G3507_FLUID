@@ -23,6 +23,7 @@
  */
 
 #include "ti_msp_dl_config.h"
+#include "clock.h"          /* tick_ms：几何动画的帧节拍 */
 #include "debug.h"
 #include "scenes.h"
 #include "led_matrix.h"
@@ -180,5 +181,606 @@ uint8_t StillScene_Cmd(uint16_t id, const int32_t *arg)
 
         default:
             return 0u;          /* 不是我的命令，交给 app 报 result = 3 */
+    }
+}
+
+
+/* ==================== 几何动画（阶段 4）====================
+ *
+ * 一层极小的渲染层 + 两个内置动画（球 / 立方体）。
+ *
+ * ==================== 为什么要"超采样" ====================
+ * 15×16 直接画线只有两种结果：要么 1 px 宽的硬线（斜线全是锯齿），
+ * 要么完全画不出来。这里先用 3 倍超采样在 45×48 的缓冲上画，
+ * 再按 3×3 平均降回 15×16 —— 每个输出格有 9 级"覆盖度"，
+ * 于是斜线变成灰度渐变，看着就"清晰"了。
+ *
+ * 代价：超采样缓冲 45×48 = 2160 B RAM。想省 RAM 就把 GEO_SUP 改成 2
+ *      （30×32 = 960 B，但只剩 4 级覆盖度，锯齿会回来一些）。
+ *
+ * 定点：全部 Q8.8（int16，1.0 = 256）；三角函数查 256 项表（M0+ 没有 FPU）。
+ *
+ * 两个动画（ganim 0/1）：
+ *   0 弹跳球     **吃 IMU 重力**（倾斜板子，球就往低处滚）+ 可调半径
+ *   1 旋转立方体 3D→2D 投影 + 超采样抗锯齿的 12 条棱
+ */
+
+#define GEO_W          ((uint8_t) LED_APP_COLS)          /* 15 */
+#define GEO_H          ((uint8_t) LED_APP_ROWS)          /* 16 */
+#define GEO_N          ((uint16_t) (GEO_W * GEO_H))      /* 240 */
+#define GEO_FPS_MS     (40u)                             /* 25 fps */
+#define GEO_SUP        (3u)                              /* 超采样倍数 */
+#define GEO_HW         ((uint16_t) (GEO_W * GEO_SUP))    /* 45 */
+#define GEO_HH         ((uint16_t) (GEO_H * GEO_SUP))    /* 48 */
+#define GEO_HN         ((uint16_t) (GEO_HW * GEO_HH))    /* 2160 */
+#define GEO_SUP2       ((uint16_t) (GEO_SUP * GEO_SUP))  /* 9 */
+#define GEO_BALL_RMAX  (6u)
+#define GEO_BALL_RDEF  (2u)
+#define GEO_KICK_MAX   (8u)
+#define GEO_KICK_DEF   (3u)                              /* 碰边后固定的弹起速度 px/帧 */
+#define GEO_DAMP_MAX   (8u)
+#define GEO_DAMP_DEF   (2u)                              /* 每横向撞一次减 s_damp*4/256 */
+#define GEO_HDAMP_MIN  (64u)                             /* 水平弹性最低保留 25% */
+
+/* ---- 扩散环（ganim 2）---- */
+/* 最大半径 9.4 px：再大屏幕就只剩四个角的弧了（对角线约 10.6 px），
+ * 到这里就重来一圈，看起来是"一轮一轮地往外撞"。 */
+#define GEO_RING_MAX   (2400)
+#define GEO_RING_STEP  (90)                              /* 每帧半径增量 ≈ 0.35 px */
+#define GEO_RING_W     (300)                             /* 环宽 ≈ 1.2 px（Q8.8）*/
+
+/* Q8.8 正弦表：sin(2πi/256) × 256，峰值夹到 ±255（256 会让 (v+256)>>1 溢出）*/
+static const int16_t s_geo_sin[256] = {
+        0,    6,   13,   19,   25,   31,   38,   44,   50,   56,   62,   68,
+       74,   80,   86,   92,   98,  104,  109,  115,  121,  126,  132,  137,
+      142,  147,  152,  157,  162,  167,  172,  177,  181,  185,  190,  194,
+      198,  202,  206,  209,  213,  216,  220,  223,  226,  229,  231,  234,
+      237,  239,  241,  243,  245,  247,  248,  250,  251,  252,  253,  254,
+      255,  255,  255,  255,  255,  255,  255,  255,  255,  254,  253,  252,
+      251,  250,  248,  247,  245,  243,  241,  239,  237,  234,  231,  229,
+      226,  223,  220,  216,  213,  209,  206,  202,  198,  194,  190,  185,
+      181,  177,  172,  167,  162,  157,  152,  147,  142,  137,  132,  126,
+      121,  115,  109,  104,   98,   92,   86,   80,   74,   68,   62,   56,
+       50,   44,   38,   31,   25,   19,   13,    6,    0,   -6,  -13,  -19,
+      -25,  -31,  -38,  -44,  -50,  -56,  -62,  -68,  -74,  -80,  -86,  -92,
+      -98, -104, -109, -115, -121, -126, -132, -137, -142, -147, -152, -157,
+     -162, -167, -172, -177, -181, -185, -190, -194, -198, -202, -206, -209,
+     -213, -216, -220, -223, -226, -229, -231, -234, -237, -239, -241, -243,
+     -245, -247, -248, -250, -251, -252, -253, -254, -255, -255, -255, -255,
+     -255, -255, -255, -255, -255, -254, -253, -252, -251, -250, -248, -247,
+     -245, -243, -241, -239, -237, -234, -231, -229, -226, -223, -220, -216,
+     -213, -209, -206, -202, -198, -194, -190, -185, -181, -177, -172, -167,
+     -162, -157, -152, -147, -142, -137, -132, -126, -121, -115, -109, -104,
+      -98,  -92,  -86,  -80,  -74,  -68,  -62,  -56,  -50,  -44,  -38,  -31,
+      -25,  -19,  -13,   -6,
+};
+
+static uint8_t  s_gbuf[GEO_N];      /* 输出缓冲（15×16） */
+static uint8_t  s_hbuf[GEO_HN];     /* 超采样缓冲（45×48） */
+static uint8_t  s_anim;             /* 0 球 / 1 立方体 */
+static uint8_t  s_tail = 2u;        /* 拖尾：0 = 不拖尾，1..8 越大尾巴越长 */
+static uint8_t  s_ballR = GEO_BALL_RDEF;
+static uint8_t  s_kick  = GEO_KICK_DEF;
+
+/* 水平方向阻尼：竖直方向永远给满力（球要一直有精神），
+ * 横向则每撞一次衰减一点 —— 否则左右来回弹像打砖块。
+ * s_hdamp 是 Q8.8 的"水平弹性"：256 = 100%，最低 GEO_HDAMP_MIN。
+ * 不撞墙时会缓慢恢复，所以只是"横向慢慢安静下来"，不是永久变懒。 */
+static uint16_t s_hdamp = 256u;
+static uint8_t  s_damp  = GEO_DAMP_DEF;
+static uint16_t s_frames;
+static uint16_t s_ringR;                /* 扩散环半径（Q8.8） */
+static uint16_t s_phase;
+static uint32_t s_nextMs;
+static uint8_t  s_geoInited;
+
+/* 球状态（Q8.8，单位 = 像素） */
+static int16_t s_bx, s_by, s_bvx, s_bvy;
+
+static int16_t geo_sin(uint16_t a) { return s_geo_sin[a & 0xFFu]; }
+static int16_t geo_cos(uint16_t a) { return s_geo_sin[(a + 64u) & 0xFFu]; }
+
+static void geo_clear(void)
+{
+    uint16_t i;
+
+    for (i = 0u; i < GEO_N; i++) {
+        s_gbuf[i] = 0u;
+    }
+}
+
+static void h_clear(void)
+{
+    uint16_t i;
+
+    for (i = 0u; i < GEO_HN; i++) {
+        s_hbuf[i] = 0u;
+    }
+}
+
+/* 在超采样缓冲上点一个子像素（坐标是**子像素整数**） */
+static void h_plot(int16_t x, int16_t y, uint8_t lv)
+{
+    uint8_t *p;
+
+    if ((x < 0) || (y < 0) || (x >= (int16_t) GEO_HW) || (y >= (int16_t) GEO_HH)) {
+        return;
+    }
+    p = &s_hbuf[((uint16_t) y * GEO_HW) + (uint16_t) x];
+    if (lv > *p) {
+        *p = lv;
+    }
+}
+
+/* 画一个"粗点"：GEO_SUP×GEO_SUP 的小方块 —— 3 倍超采样下正好约 1 个输出像素宽，
+ * 既不会因为太细而变暗（1/9 覆盖度只有 28 灰），边缘又保留抗锯齿。 */
+static void h_dot(int16_t x, int16_t y, uint8_t lv)
+{
+    int16_t dx, dy;
+
+    for (dy = 0; dy < (int16_t) GEO_SUP; dy++) {
+        for (dx = 0; dx < (int16_t) GEO_SUP; dx++) {
+            h_plot((int16_t) (x + dx), (int16_t) (y + dy), lv);
+        }
+    }
+}
+
+/* Bresenham 直线（子像素坐标） */
+static void h_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint8_t lv)
+{
+    int16_t dx = (int16_t) ((x1 > x0) ? (x1 - x0) : (x0 - x1));
+    int16_t dy = (int16_t) ((y1 > y0) ? (y0 - y1) : (y1 - y0));
+    int16_t sx = (int16_t) ((x0 < x1) ? 1 : -1);
+    int16_t sy = (int16_t) ((y0 < y1) ? 1 : -1);
+    int16_t err = (int16_t) (dx + dy);
+
+    for (;;) {
+        int16_t e2;
+
+        h_dot(x0, y0, lv);
+        if ((x0 == x1) && (y0 == y1)) {
+            break;
+        }
+        e2 = (int16_t) (err << 1);
+        if (e2 >= dy) {
+            err = (int16_t) (err + dy);
+            x0  = (int16_t) (x0 + sx);
+        }
+        if (e2 <= dx) {
+            err = (int16_t) (err + dx);
+            y0  = (int16_t) (y0 + sy);
+        }
+    }
+}
+
+/* 实心圆（子像素坐标，Q8.8），带 1 子像素的软边 */
+static void h_disc(int32_t cx, int32_t cy, int32_t r, uint8_t lv)
+{
+    int32_t x0 = (cx - r) >> 8;
+    int32_t x1 = (cx + r) >> 8;
+    int32_t y0 = (cy - r) >> 8;
+    int32_t y1 = (cy + r) >> 8;
+    int32_t r2 = r * r;
+    int32_t edge = 2 * r + 256;
+    int16_t x, y;
+
+    if (x0 < 0) { x0 = 0; }
+    if (y0 < 0) { y0 = 0; }
+    if (x1 >= (int32_t) GEO_HW) { x1 = (int32_t) GEO_HW - 1; }
+    if (y1 >= (int32_t) GEO_HH) { y1 = (int32_t) GEO_HH - 1; }
+
+    for (y = (int16_t) y0; y <= (int16_t) y1; y++) {
+        for (x = (int16_t) x0; x <= (int16_t) x1; x++) {
+            int32_t dx = ((int32_t) x << 8) - cx;
+            int32_t dy = ((int32_t) y << 8) - cy;
+            int32_t d2 = (dx * dx) + (dy * dy);
+
+            if (d2 <= r2) {
+                h_plot(x, y, lv);
+            } else if (d2 <= (r2 + edge)) {
+                h_plot(x, y, (uint8_t) (lv / 3u));
+            }
+        }
+    }
+}
+
+/* 超采样缓冲 → 15×16：3×3 平均，得到 9 级覆盖度 */
+static void geo_compose(void)
+{
+    uint8_t x, y, dx, dy;
+
+    for (y = 0u; y < GEO_H; y++) {
+        for (x = 0u; x < GEO_W; x++) {
+            uint8_t *dst = &s_gbuf[((uint16_t) y * GEO_W) + x];
+            uint16_t sum = 0u;
+            uint8_t  v;
+
+            for (dy = 0u; dy < (uint8_t) GEO_SUP; dy++) {
+                const uint8_t *row =
+                    &s_hbuf[(((uint16_t) y * GEO_SUP + dy) * GEO_HW) + ((uint16_t) x * GEO_SUP)];
+
+                for (dx = 0u; dx < (uint8_t) GEO_SUP; dx++) {
+                    sum = (uint16_t) (sum + row[dx]);
+                }
+            }
+
+            v = (uint8_t) (sum / GEO_SUP2);
+            if (v > *dst) {
+                *dst = v;
+            }
+        }
+    }
+}
+
+/* 拖尾：每帧 buf -= buf >> tail；tail = 0 直接清空 */
+static void geo_fade(void)
+{
+    uint16_t i;
+    uint8_t  k = s_tail;
+
+    if (k == 0u) {
+        geo_clear();
+        return;
+    }
+    for (i = 0u; i < GEO_N; i++) {
+        uint8_t v = s_gbuf[i];
+
+        s_gbuf[i] = (uint8_t) (v - (uint8_t) (v >> k));
+    }
+}
+
+static void geo_flush(void)
+{
+    uint8_t x, y, lv;
+
+    LedMatrix_Clear();
+    for (y = 0u; y < GEO_H; y++) {
+        for (x = 0u; x < GEO_W; x++) {
+            lv = s_gbuf[((uint16_t) y * GEO_W) + x];
+            if (lv != 0u) {
+                LedMatrix_SetCellLevel((uint8_t) (x + 1u), (uint8_t) (y + 1u), lv);
+            }
+        }
+    }
+    LedMatrix_Flush();
+}
+
+/* ---- 0：弹跳球（吃 IMU 重力）---- */
+static void geo_reset_ball(void)
+{
+    s_bx    = (int16_t) (7 * 256);
+    s_by    = (int16_t) (2 * 256);
+    s_bvx   = 0;
+    s_bvy   = 0;
+    s_hdamp = 256u;                     /* 重新开始：水平弹性满格 */
+}
+
+static void geo_ball(const app_in_t *in)
+{
+    /* IMU 重力：in->ax_slow 是 Q24 的"模拟单位"，1g ≈ 9.8（见 app.c 的 App_MgToSim）。
+     * 右移 16 位得到 Q8.8（9.8 → 2509），再除以 40 ≈ 0.24 px/帧² 的加速度。
+     * IMU 没通时上层给的是"假重力"（同样 9.8 量级、方向会变），所以照样能弹。 */
+    int32_t gx = (int32_t) (in->ax_slow >> 16);
+    int32_t gy = (int32_t) (in->ay_slow >> 16);
+    int16_t r  = (int16_t) (s_ballR * 256);
+    int16_t lo = r;
+    int16_t hi_x = (int16_t) (((GEO_W - 1u) * 256) - r);
+    int16_t hi_y = (int16_t) (((GEO_H - 1u) * 256) - r);
+
+    s_bvx = (int16_t) (s_bvx + (gx / 40));
+    s_bvy = (int16_t) (s_bvy + (gy / 40));
+
+    /* 空气阻力：否则来回弹会越弹越快 */
+    s_bvx = (int16_t) (s_bvx - (s_bvx >> 6));
+    s_bvy = (int16_t) (s_bvy - (s_bvy >> 6));
+
+    s_bx = (int16_t) (s_bx + s_bvx);
+    s_by = (int16_t) (s_by + s_bvy);
+
+    /* 撞墙：**给固定的力**弹起（不是简单的速度反向）。
+     *
+     * 为什么必须这样：球现在吃 IMU 重力，倾斜时会被持续压向低位那面墙。
+     * 单纯"反向 + 损失 20%"会越弹越小，最后贴在角上不动 —— 看起来像卡死。
+     * 这里每次接触都赋一个固定速度（gkick，1..8 px/帧），保证一直有精神。
+     */
+    {
+        int16_t kick = (int16_t) (s_kick * 256);
+        int16_t hx   = (int16_t) (((int32_t) kick * (int32_t) s_hdamp) >> 8);
+
+        if (s_bx < lo) {
+            s_bx  = lo;
+            s_bvx = hx;                     /* 横向：按当前弹性衰减后的力 */
+            if ((s_damp != 0u) && (s_hdamp > GEO_HDAMP_MIN)) {
+                uint16_t d = (uint16_t) (s_damp * 4u);
+
+                s_hdamp = (s_hdamp > (GEO_HDAMP_MIN + d))
+                          ? (uint16_t) (s_hdamp - d) : GEO_HDAMP_MIN;
+            }
+        } else if (s_bx > hi_x) {
+            s_bx  = hi_x;
+            s_bvx = (int16_t) (-hx);
+            if ((s_damp != 0u) && (s_hdamp > GEO_HDAMP_MIN)) {
+                uint16_t d = (uint16_t) (s_damp * 4u);
+
+                s_hdamp = (s_hdamp > (GEO_HDAMP_MIN + d))
+                          ? (uint16_t) (s_hdamp - d) : GEO_HDAMP_MIN;
+            }
+        }
+
+        if (s_by < lo) {
+            s_by  = lo;
+            s_bvy = kick;                   /* 竖直：永远给满力 */
+        } else if (s_by > hi_y) {
+            s_by  = hi_y;
+            s_bvy = (int16_t) (-kick);
+        }
+    }
+
+    /* 一段时间没横向撞墙就慢慢恢复弹性 */
+    if ((s_hdamp < 256u) && ((s_frames & 0x0Fu) == 0u)) {
+        s_hdamp = (uint16_t) (s_hdamp + 4u);
+        if (s_hdamp > 256u) {
+            s_hdamp = 256u;
+        }
+    }
+
+    h_disc((int32_t) s_bx * (int32_t) GEO_SUP,
+           (int32_t) s_by * (int32_t) GEO_SUP,
+           (int32_t) r * (int32_t) GEO_SUP, 255);
+}
+
+/* ---- 2：中心扩散环 + 方框内不断反弹 ----
+ *
+ * 做法是**镜像法**：不存速度、不做碰撞检测，只让半径一直涨，
+ * 然后把"源点到像素的距离"按边框折叠（billiard folding）：
+ *
+ *     t = (px - sx) mod 2L;  t > L 时 t = 2L - t
+ *
+ * 这样距离场天然在边框上折返，看起来就是"环撞到方框又弹回来"。
+ * 一维折叠后再合成二维距离 —— 因为镜像源是二维网格，
+ * min_grid(a²+b²) = min_a(a²) + min_b(b²)，所以折叠可以分轴做。
+ */
+
+/* 整数平方根（Q16.16 → Q8.8），逐位逼近，不用除法 */
+static uint32_t geo_isqrt(uint32_t v)
+{
+    uint32_t res = 0u;
+    uint32_t bit = (uint32_t) 1u << 30;
+
+    while (bit > v) {
+        bit >>= 2;
+    }
+    while (bit != 0u) {
+        if (v >= (res + bit)) {
+            v -= (res + bit);
+            res = (res >> 1) + bit;
+        } else {
+            res >>= 1;
+        }
+        bit >>= 2;
+    }
+    return res;
+}
+
+/* 一维折叠：把 |px - 源| 折进 [0, L] */
+static int32_t geo_fold(int32_t d, int32_t twoL)
+{
+    int32_t t = d % twoL;
+
+    if (t < 0) {
+        t += twoL;
+    }
+    if (t > (twoL / 2)) {
+        t = twoL - t;
+    }
+    return t;
+}
+
+/* 往输出缓冲（15×16）点一个像素，取最亮 */
+static void geo_plot_px(uint8_t x, uint8_t y, uint8_t lv)
+{
+    uint8_t *p;
+
+    if ((x >= GEO_W) || (y >= GEO_H)) {
+        return;
+    }
+    p = &s_gbuf[((uint16_t) y * GEO_W) + x];
+    if (lv > *p) {
+        *p = lv;
+    }
+}
+
+static void geo_ring(void)
+{
+    int32_t lx2 = (int32_t) (((GEO_W - 1u) << 8) * 2);   /* 2L，Q8.8 */
+    int32_t ly2 = (int32_t) (((GEO_H - 1u) << 8) * 2);
+    int32_t sx  = (int32_t) (7 * 256);                   /* 圆心：中间线 */
+    int32_t sy  = (int32_t) (7 * 256 + 128);
+    int32_t r   = (int32_t) s_ringR;
+    uint8_t x, y;
+
+    for (y = 0u; y < GEO_H; y++) {
+        for (x = 0u; x < GEO_W; x++) {
+            int32_t px = (int32_t) x << 8;
+            int32_t py = (int32_t) y << 8;
+            int32_t dx = geo_fold(px - sx, lx2);
+            int32_t dy = geo_fold(py - sy, ly2);
+            int32_t d  = (int32_t) geo_isqrt((uint32_t) ((dx * dx) + (dy * dy)));
+            int32_t diff = d - r;
+
+            if (diff < 0) {
+                diff = -diff;
+            }
+            if (diff <= GEO_RING_W) {
+                geo_plot_px(x, y, (uint8_t) (255 - ((diff * 255) / GEO_RING_W)));
+            }
+        }
+    }
+
+    s_ringR = (uint16_t) ((s_ringR + GEO_RING_STEP) % GEO_RING_MAX);
+}
+
+/* ---- 1：旋转立方体 ---- */
+static const int16_t s_cubeV[8][3] = {
+    { -1024, -1024, -1024 }, { 1024, -1024, -1024 },
+    {  1024,  1024, -1024 }, { -1024,  1024, -1024 },
+    { -1024, -1024,  1024 }, { 1024, -1024,  1024 },
+    {  1024,  1024,  1024 }, { -1024,  1024,  1024 }
+};
+
+static const uint8_t s_cubeE[12][2] = {
+    { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
+    { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+    { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+};
+
+static void geo_cube(void)
+{
+    int16_t spx[8];
+    int16_t spy[8];
+    int16_t cyw = geo_cos(s_phase);
+    int16_t syw = geo_sin(s_phase);
+    int16_t cpt = geo_cos((uint16_t) (s_phase >> 1));
+    int16_t spt = geo_sin((uint16_t) (s_phase >> 1));
+    uint8_t i;
+
+    for (i = 0u; i < 8u; i++) {
+        int32_t x  = s_cubeV[i][0];
+        int32_t y  = s_cubeV[i][1];
+        int32_t z  = s_cubeV[i][2];
+        int32_t x1 = (x * cyw - z * syw) >> 8;
+        int32_t z1 = (x * syw + z * cyw) >> 8;
+        int32_t y2 = (y * cpt - z1 * spt) >> 8;
+        int32_t z2 = (y * spt + z1 * cpt) >> 8;
+        int32_t sc = 1024 + (z2 >> 2);              /* 轻微透视：近大远小 */
+        int32_t px = (int32_t) (7 * 256) + ((x1 * sc) >> 10);
+        int32_t py = (int32_t) (7 * 256) + 128 + ((y2 * sc) >> 10);
+
+        /* Q8.8 像素 → 子像素（乘超采样倍数），h_line 收整数子像素 */
+        spx[i] = (int16_t) (((px * (int32_t) GEO_SUP) + 128) >> 8);
+        spy[i] = (int16_t) (((py * (int32_t) GEO_SUP) + 128) >> 8);
+    }
+
+    for (i = 0u; i < 12u; i++) {
+        uint8_t a = s_cubeE[i][0];
+        uint8_t b = s_cubeE[i][1];
+
+        h_line(spx[a], spy[a], spx[b], spy[b], 255);
+    }
+}
+
+/* ==================== 场景 4 接口 ==================== */
+
+void GeomScene_Select(uint8_t n)
+{
+    if (n > 2u) {                        /* 0 球 / 1 立方体 / 2 扩散环 */
+        return;
+    }
+    s_anim      = n;
+    s_geoInited = 0u;
+    s_ringR     = 0u;
+    geo_clear();
+}
+
+void GeomScene_Enter(void)
+{
+    s_geoInited = 0u;
+    geo_clear();
+    s_nextMs = tick_ms;
+}
+
+void GeomScene_Tick(const app_in_t *in)
+{
+    if (s_geoInited == 0u) {
+        s_geoInited = 1u;
+        s_phase     = 0u;
+        if (s_anim == 0u) {
+            geo_reset_ball();
+        }
+        s_nextMs = in->now_ms;
+    }
+
+    if ((int32_t) (in->now_ms - s_nextMs) < 0) {
+        return;                         /* 还没到下一帧 */
+    }
+    s_nextMs += GEO_FPS_MS;
+
+    geo_fade();
+
+    /* 环动画直接在 15×16 上按距离场算，不需要超采样（它本身就是连续的）*/
+    if (s_anim == 2u) {
+        geo_ring();
+        geo_flush();
+        s_phase = (uint16_t) ((s_phase + 2u) & 0xFFu);
+        s_frames++;
+        return;
+    }
+
+    h_clear();
+
+    switch (s_anim) {
+        case 0u:  geo_ball(in);  break;
+        default:  geo_cube();    break;
+    }
+
+    geo_compose();
+    geo_flush();
+    s_phase = (uint16_t) ((s_phase + 2u) & 0xFFu);
+    s_frames++;
+}
+
+void GeomScene_Exit(void)
+{
+    /* 缓冲留着，切回来接着画 */
+}
+
+uint8_t GeomScene_Cmd(uint16_t id, const int32_t *arg)
+{
+    switch (id) {
+        case DBG_CMD_GEOM_ANIM:
+            if ((arg[0] >= 0) && (arg[0] <= 2)) {
+                GeomScene_Select((uint8_t) arg[0]);
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_GEOM_TAIL:
+            if ((arg[0] >= 0) && (arg[0] <= 8)) {
+                s_tail = (uint8_t) arg[0];
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_GEOM_BALL:
+            if ((arg[0] >= 1) && (arg[0] <= (int32_t) GEO_BALL_RMAX)) {
+                s_ballR = (uint8_t) arg[0];
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_GEOM_KICK:
+            if ((arg[0] >= 1) && (arg[0] <= (int32_t) GEO_KICK_MAX)) {
+                s_kick = (uint8_t) arg[0];
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_GEOM_DAMP:
+            if ((arg[0] >= 0) && (arg[0] <= (int32_t) GEO_DAMP_MAX)) {
+                s_damp = (uint8_t) arg[0];
+                if (s_damp == 0u) {
+                    s_hdamp = 256u;         /* 关掉阻尼：立刻恢复满弹性 */
+                }
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        default:
+            return 0u;
     }
 }

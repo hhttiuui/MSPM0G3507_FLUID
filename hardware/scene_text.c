@@ -118,6 +118,7 @@ static uint8_t  s_rot;
 static uint8_t  s_rotCand;      /* 候选方向 */
 static uint32_t s_rotSince;     /* 候选开始稳定的时刻 */
 static uint8_t  s_orientAuto = 1u;   /* 1 = 自动跟随重力（默认）*/
+static uint8_t  s_inv;               /* 1 = 反色（亮底黑字）*/
 static uint32_t s_lastMs;
 
 /* 条带来源：0 = 内置字库（RenderStrip），1 = 上位机发来的字形（ComposeGlyphs）。
@@ -313,6 +314,21 @@ static void DrawFrame(void)
 
     LedMatrix_Clear();
 
+    /* 反色：先把**整屏**铺成 s_lev，再把字的位置挖成 0。
+     * ⚠ 反色必须在"画帧"这一层做，不能只翻条带缓冲 —— 条带以外的区域
+     *   （字库 12 行以外的上下留白、滚动末尾那段空白）根本不在缓冲里，
+     *   只翻缓冲的话就会出现"上下有一截不亮"和"滚完突然全灭一段"。 */
+    if (s_inv != 0u) {
+        uint8_t fx;
+        uint8_t fy;
+
+        for (fy = 1u; fy <= (uint8_t) LED_APP_ROWS; fy++) {
+            for (fx = 1u; fx <= (uint8_t) LED_APP_COLS; fx++) {
+                LedMatrix_SetCellLevel(fx, fy, s_lev);
+            }
+        }
+    }
+
     if (s_cols != 0u) {
         for (u = 0u; u < uw; u++) {
             /* 用有符号算，负数才是"还没进来" */
@@ -358,7 +374,7 @@ static void DrawFrame(void)
                         break;
                 }
 
-                LedMatrix_SetCellLevel(x, y, s_lev);
+                LedMatrix_SetCellLevel(x, y, (s_inv != 0u) ? 0u : s_lev);
             }
         }
     }
@@ -594,6 +610,196 @@ uint8_t TextScene_LoadStrip(const uint8_t *bits, uint16_t cols)
     return 1u;
 }
 
+/* ==================== 文字预设（存 Flash）====================
+ *
+ * **PC 端是主、板子是副本**：上位机先 `tpclr` 清空，再一条条 `tpadd` 追加。
+ * 板子只做"顺序追加"，因此：
+ *   · 不需要"把扇区读进 RAM、改一条、再整扇区写回"（那要 1 KB 缓冲，
+ *     而本工程 RAM 只剩 5.6 KB，栈也不能放 1 KB）
+ *   · 不需要擦除单条 —— flash 只能整扇区擦，追加正好绕开这个限制
+ *
+ * 布局（FLASH_REG_TEXT 起，占 2 个扇区 = 2 KB）：
+ *   [0..7]  头：'T','X','T','1' + 4 字节 0xFF
+ *   [8..]   记录数组，每条 40 B，最多 (2048-8)/40 = 51 条
+ *
+ *   记录内部：
+ *     +0  len     1  UTF-8 字节数 1..32；0 = 空位（从这里往后都不再用）
+ *     +1  step    1  每帧滚动像素
+ *     +2  ms      2  帧间隔，小端
+ *     +4  lev     1  亮度
+ *     +5  orient  1  0~3 固定方向，4 = 自动跟随重力
+ *     +6  flags   1  预留，写 0
+ *     +7  pad     1  写 0xFF
+ *     +8  txt[32]   不带结尾 0（长度由 len 给）
+ *
+ * 掉电保护：记录是"一次写成"的，写一半时 len 可能已非 0 但正文不全 ——
+ * 所以要求 len 与实际可解析的 UTF-8 长度一致才认（见 tstore_rec_valid）。
+ */
+#define TSTORE_REC_SIZE   40u
+#define TSTORE_HDR_SIZE   8u
+#define TSTORE_CAP        ((2u * FLASH_STORE_SECTOR - TSTORE_HDR_SIZE) / TSTORE_REC_SIZE)
+#define TSTORE_TXT_OFF    8u
+
+static uint32_t tstore_rec_addr(uint16_t i)
+{
+    return (uint32_t) FLASH_REG_TEXT + TSTORE_HDR_SIZE
+           + ((uint32_t) i * TSTORE_REC_SIZE);
+}
+
+static uint8_t tstore_magic_ok(void)
+{
+    const uint8_t *p = (const uint8_t *) FLASH_REG_TEXT;
+
+    if ((p[0] == (uint8_t) 'T') && (p[1] == (uint8_t) 'X') &&
+        (p[2] == (uint8_t) 'T') && (p[3] == (uint8_t) '1')) {
+        return 1u;
+    }
+
+    return 0u;
+}
+
+/* 记录是否可用：len 在 1..TEXT_MAX_BYTES，且末尾不是半个 UTF-8 序列 */
+static uint8_t tstore_rec_valid(const uint8_t *p)
+{
+    uint8_t len = p[0];
+    uint8_t i;
+
+    if ((len == 0u) || (len > (uint8_t) TEXT_MAX_BYTES)) {
+        return 0u;
+    }
+
+    /* 逐字符走一遍，必须正好落在 len 上（半截序列 → 判无效，跳过这条） */
+    i = 0u;
+    while (i < len) {
+        uint8_t n = Utf8SeqLen(p[TSTORE_TXT_OFF + i]);
+
+        if ((uint16_t) ((uint16_t) i + (uint16_t) n) > (uint16_t) len) {
+            return 0u;
+        }
+        i = (uint8_t) (i + n);
+    }
+
+    return 1u;
+}
+
+uint8_t TextScene_StoreCount(void)
+{
+    uint16_t i;
+
+    if (tstore_magic_ok() == 0u) {
+        return 0u;
+    }
+
+    for (i = 0u; i < (uint16_t) TSTORE_CAP; i++) {
+        if (tstore_rec_valid((const uint8_t *) tstore_rec_addr(i)) == 0u) {
+            break;
+        }
+    }
+
+    return (uint8_t) i;
+}
+
+uint8_t TextScene_StoreClear(void)
+{
+    static const uint8_t hdr[TSTORE_HDR_SIZE] = {
+        (uint8_t) 'T', (uint8_t) 'X', (uint8_t) 'T', (uint8_t) '1',
+        0xFFu, 0xFFu, 0xFFu, 0xFFu
+    };
+
+    if (FlashStore_Erase((uint32_t) FLASH_REG_TEXT, 2u) == 0u) {
+        return 0u;
+    }
+
+    return FlashStore_Write((uint32_t) FLASH_REG_TEXT, hdr, TSTORE_HDR_SIZE);
+}
+
+uint8_t TextScene_StoreAdd(void)
+{
+    uint8_t  rec[TSTORE_REC_SIZE];
+    uint8_t  n;
+    uint8_t  len;
+    uint8_t  k;
+
+    n = TextScene_StoreCount();
+    if (n >= (uint8_t) TSTORE_CAP) {
+        return 0u;                          /* 满了：上位机该先 tpclr */
+    }
+
+    for (k = 0u; k < (uint8_t) TSTORE_REC_SIZE; k++) {
+        rec[k] = 0xFFu;
+    }
+
+    len = 0u;
+    while ((len < (uint8_t) TEXT_MAX_BYTES) && (s_text[len] != '\0')) {
+        rec[TSTORE_TXT_OFF + len] = (uint8_t) s_text[len];
+        len++;
+    }
+
+    if (len == 0u) {
+        return 0u;                          /* 空文字不能存：len 0 就是"空位"标记 */
+    }
+
+    rec[0] = len;
+    rec[1] = s_step;
+    rec[2] = (uint8_t) (s_ms & 0xFFu);
+    rec[3] = (uint8_t) (s_ms >> 8);
+    rec[4] = s_lev;
+    rec[5] = (s_orientAuto != 0u) ? 4u : s_rot;
+    rec[6] = (s_inv != 0u) ? 1u : 0u;       /* flags bit0 = 反色 */
+    rec[7] = 0xFFu;
+
+    return FlashStore_Write(tstore_rec_addr(n), rec, TSTORE_REC_SIZE);
+}
+
+uint8_t TextScene_StoreApply(uint8_t i)
+{
+    const uint8_t *p;
+    uint8_t len;
+    uint8_t k;
+
+    if ((i >= (uint8_t) TSTORE_CAP) || (tstore_magic_ok() == 0u)) {
+        return 0u;
+    }
+
+    p = (const uint8_t *) tstore_rec_addr(i);
+    if (tstore_rec_valid(p) == 0u) {
+        return 0u;
+    }
+
+    len = p[0];
+    for (k = 0u; k < len; k++) {
+        s_text[k] = (char) p[TSTORE_TXT_OFF + k];
+    }
+    s_text[len] = '\0';
+
+    s_step = p[1];
+    if (s_step > (uint8_t) TEXT_STEP_MAX) {
+        s_step = TEXT_STEP_DEF;
+    }
+
+    s_ms = (uint16_t) ((uint16_t) p[2] | ((uint16_t) p[3] << 8));
+    if ((s_ms < (uint16_t) TEXT_MS_MIN) || (s_ms > (uint16_t) TEXT_MS_MAX)) {
+        s_ms = TEXT_MS_DEF;
+    }
+
+    s_lev = p[4];
+    s_inv = (uint8_t) (p[6] & 0x01u);       /* flags bit0 = 反色 */
+
+    if (p[5] == 4u) {
+        s_orientAuto = 1u;
+        s_rotCand    = s_rot;
+        s_rotSince   = tick_ms;
+    } else if (p[5] <= 3u) {
+        s_orientAuto = 0u;
+        s_rot        = p[5];
+        dbg.app.rot  = s_rot;
+    }
+
+    s_ext = 0u;                             /* 预设走内置字库渲染 */
+    Restart();
+    return 1u;
+}
+
 /* ==================== 场景入口 ==================== */
 
 void TextScene_Enter(void)
@@ -763,6 +969,44 @@ uint8_t TextScene_Cmd(uint16_t id, const int32_t *arg)
             if ((arg[0] >= 0) && (arg[0] <= 255)) {
                 s_lev = (uint8_t) arg[0];
                 DrawFrame();                /* 亮度改了立刻重画一帧 */
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_TEXT_INV:
+            /* tinv 0/1：文字反色（亮底黑字）。
+             * 反色是在 DrawFrame 里做的（整屏铺 s_lev，字挖成 0），
+             * 所以这里只需要改标志 + 重画一帧，条带内容完全不用动。 */
+            {
+                uint8_t nv = (arg[0] != 0) ? 1u : 0u;
+
+                if (nv == s_inv) {
+                    return 1u;
+                }
+                s_inv = nv;
+                DrawFrame();
+            }
+            return 1u;
+
+        case DBG_CMD_TEXT_TPCLR:
+            if (TextScene_StoreClear() == 0u) {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_TEXT_TPADD:
+            /* 把"当前"的 text/tstep/tms/tlev/torient 追加成一条预设。
+             * 用法：先 text xxx / tstep / tms / tlev / torient 调好，再 tpadd。 */
+            if (TextScene_StoreAdd() == 0u) {
+                dbg.cmd.result = 2u;
+            }
+            return 1u;
+
+        case DBG_CMD_TEXT_TPLOAD:
+            if ((arg[0] >= 0) && (arg[0] < (int32_t) TSTORE_CAP) &&
+                (TextScene_StoreApply((uint8_t) arg[0]) != 0u)) {
+                /* ok */
             } else {
                 dbg.cmd.result = 2u;
             }

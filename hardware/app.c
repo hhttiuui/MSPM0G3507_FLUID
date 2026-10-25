@@ -59,6 +59,7 @@
 #include "vofa.h"
 #include "glyph_store.h"
 #include "flash_store.h"
+#include "asset_route.h"
 
 /* ==================== 配置 ==================== */
 
@@ -185,6 +186,7 @@ static const scene_t s_scenes[] = {
     /* 1 */ { StillScene_Enter, StillScene_Tick, StillScene_Exit, StillScene_Cmd },
     /* 2 */ { TextScene_Enter,  TextScene_Tick,  TextScene_Exit,  TextScene_Cmd  },
     /* 3 */ { FrameScene_Enter, FrameScene_Tick, FrameScene_Exit, 0             },
+    /* 4 */ { GeomScene_Enter,  GeomScene_Tick,  GeomScene_Exit,  GeomScene_Cmd },
 };
 
 #define SCENE_COUNT     ((uint8_t) (sizeof(s_scenes) / sizeof(s_scenes[0])))
@@ -374,11 +376,16 @@ static void App_ReadInput(app_in_t *in)
         in->shy     = 0;
     }
 
-    /* 按键"按下"边沿。Key_TookPress 读后自动清零，所以这里必须每帧都读 ——
-     * 少读一帧那个边沿就丢了。 */
+    /* 按键边沿。两种边沿都要每帧读掉 —— 读后自动清零，少读一帧那个边沿就丢了。
+     *
+     * ⚠ 切场景用的是**松发**：in->key 里装的是"松开"边沿（Key_TookRelease）。
+     *   这样 USER1 长按 2 s 关机时不会顺手把大类也切了 —— 长按期间没有松开事件，
+     *   关机动作先发生，松手时板子已经断电。短按则是在松手那一刻切。
+     *   "按下"边沿这里照样读掉（丢弃），免得残留给 led_show 之类的其它消费者。 */
     in->key = 0u;
     for (k = 0u; k < (uint8_t) KEY_NUM; k++) {
-        if (Key_TookPress((key_id_t) k) != 0u) {
+        (void) Key_TookPress((key_id_t) k);
+        if (Key_TookRelease((key_id_t) k) != 0u) {
             in->key = (uint8_t) (in->key | APP_KEY_BIT(k));
         }
     }
@@ -494,6 +501,232 @@ void App_SetBrightness(uint8_t bc)
 
 uint8_t App_Brightness(void) { return s_bc; }
 
+/* ==================== 两级路由（大类 × 小类）====================
+ *
+ * 按键绑 (大类, 小类)，再由 route_apply() 解析成"进哪个场景"。
+ * 这样加内容不用动按键逻辑，也不会搅乱 s_scenes[] 的顺序（= mode 号）。
+ * 见 多资源与两级按键方案.md §4。
+ */
+
+/* 状态脏了以后空闲这么久才写 Flash —— 擦一个扇区约 20 ms，
+ * 期间取指被阻塞、动画会卡一帧，所以不能每按一次键就写。 */
+#define ROUTE_SAVE_DELAY_MS     (2000u)
+
+static uint8_t  s_cat = (uint8_t) ROUTE_CAT_FLUID;
+static uint8_t  s_item[ROUTE_CAT_COUNT];
+static uint8_t  s_dirty;
+static uint32_t s_dirtyMs;
+
+/* 每个大类有几项。
+ *
+ * ⚠ 阶段 1 是**占位值**：文字/图像各算 1 项（当前只有"最近一次上传或内置"那一份），
+ *   几何动画 0 项（还没有场景）→ 按大类时会跳过它。
+ *   阶段 2 把 TEXT 改成"读文字预设区有效条数"，
+ *   阶段 3 把 IMAGE 改成"数有几个有效动图槽头"。 */
+static uint8_t route_item_count(uint8_t cat)
+{
+    switch ((route_cat_t) cat) {
+        case ROUTE_CAT_FLUID:
+            return 1u;
+
+        case ROUTE_CAT_TEXT:
+            /* 第 0 项 = 原来的行为（TextScene_Enter 自己决定：有存 Flash 的自定义
+             * 字形就用它，否则用内置字库的当前文字），第 1 项起是文字预设。
+             * 这样"用上位机存一条条带"的老用法不会被新加的预设挤掉。 */
+            return (uint8_t) (1u + TextScene_StoreCount());
+
+        case ROUTE_CAT_IMAGE:
+            /* 第 0 项 = 扩散环（内置，恒定有），第 1 项起 = Flash 里的图/动图槽。
+             * 上位机直显那一帧不再占一项：上传时会自动 App_Goto(3) 切过去，
+             * 它本身又掉电就丢，不适合放在"图像库"里。 */
+            return (uint8_t) (1u + FrameScene_SlotCount());
+
+        case ROUTE_CAT_GEOM:
+            return 3u;                      /* 球 / 立方体 / 扩散环 */
+
+        default:
+            return 0u;
+    }
+}
+
+uint8_t Route_ItemCount(uint8_t cat) { return route_item_count(cat); }
+uint8_t Route_Cat(void)  { return s_cat; }
+uint8_t Route_Item(void) { return s_item[s_cat]; }
+
+/* 把当前 (cat, item) 应用到显示。
+ * 必须走 App_Goto()：它负责 exit → 清屏 → Flush → enter，跳过会留残影。 */
+static void route_apply(void)
+{
+    switch ((route_cat_t) s_cat) {
+        case ROUTE_CAT_FLUID:
+            App_Goto(0u);
+            break;
+
+        case ROUTE_CAT_TEXT:
+            /* 顺序不能反：先进场景（Enter 会用字库/字形重画），再套预设。
+             * StoreApply() 内部会 Restart()，先套的话会被 Enter 覆盖掉。
+             * item 0 不做任何事 —— 保持 Enter 的行为（存 Flash 的字形 / 内置字库）。 */
+            App_Goto(2u);
+            if (s_item[ROUTE_CAT_TEXT] >= 1u) {
+                (void) TextScene_StoreApply((uint8_t) (s_item[ROUTE_CAT_TEXT] - 1u));
+            }
+            break;
+
+        case ROUTE_CAT_IMAGE:
+            if (s_item[ROUTE_CAT_IMAGE] == 0u) {
+                /* 第一项：扩散环。它属于几何场景（场景 4），所以这里要跨场景。
+                 * 顺序：先 Select 再 Goto —— Goto 会触发 Enter，Enter 里按 anim 初始化。 */
+                GeomScene_Select(2u);
+                App_Goto(4u);
+            } else {
+                App_Goto(3u);
+                (void) FrameScene_PlaySlot((uint8_t) (s_item[ROUTE_CAT_IMAGE] - 1u));
+            }
+            break;
+
+        case ROUTE_CAT_GEOM:
+            GeomScene_Select(s_item[ROUTE_CAT_GEOM]);
+            App_Goto(4u);
+            break;
+
+        default:
+            break;
+    }
+
+    dbg.app.cat  = s_cat;
+    dbg.app.item = s_item[s_cat];
+}
+
+static void route_mark_dirty(void)
+{
+    s_dirty   = 1u;
+    s_dirtyMs = tick_ms;
+}
+
+/* 把当前状态写进设置记录。失败不算致命：保持脏，下个窗口再试。 */
+static void route_save(void)
+{
+    flash_settings_t st;
+    uint8_t i;
+
+    st.cat = s_cat;
+    for (i = 0u; i < (uint8_t) ROUTE_CAT_COUNT; i++) {
+        st.item[i] = s_item[i];
+    }
+    st.bc = App_Brightness();
+
+    if (FlashStore_SettingsSave(&st) != 0u) {
+        s_dirty = 0u;
+    } else {
+        s_dirtyMs = tick_ms;
+    }
+}
+
+/* 从 cat 出发按 d 方向找下一个非空大类；全都空就返回原值 */
+static uint8_t route_step_cat(uint8_t cat, int8_t d)
+{
+    uint8_t n = (uint8_t) ROUTE_CAT_COUNT;
+    uint8_t i;
+
+    for (i = 0u; i < n; i++) {
+        cat = (uint8_t) ((d > 0) ? ((cat + 1u) % n) : ((cat + n - 1u) % n));
+        if (route_item_count(cat) != 0u) {
+            return cat;
+        }
+    }
+
+    return cat;
+}
+
+void Route_Init(void)
+{
+    flash_settings_t st;
+    uint8_t i;
+
+    for (i = 0u; i < (uint8_t) ROUTE_CAT_COUNT; i++) {
+        s_item[i] = 0u;
+    }
+    s_cat   = (uint8_t) ROUTE_CAT_FLUID;
+    s_dirty = 0u;
+
+    if (FlashStore_SettingsLoad(&st) != 0u) {
+        if (st.cat < (uint8_t) ROUTE_CAT_COUNT) {
+            s_cat = st.cat;
+        }
+        /* 小类要按当前项数取模：项数变少时不能让下标越界 */
+        for (i = 0u; i < (uint8_t) ROUTE_CAT_COUNT; i++) {
+            uint8_t n = route_item_count(i);
+
+            s_item[i] = (n == 0u) ? 0u : (uint8_t) (st.item[i] % n);
+        }
+
+        /* 恢复全局亮度。0 表示"没设置过/用户关过"，那就保持默认最大值 ——
+         * 上电就是黑屏太难判断是坏还是关机。 */
+        if (st.bc != 0u) {
+            App_SetBrightness(st.bc);
+        }
+    }
+
+    /* 恢复出来的大类可能已经空了（比如几何动画还没做）→ 顺延 */
+    if (route_item_count(s_cat) == 0u) {
+        s_cat = route_step_cat(s_cat, +1);
+    }
+
+    dbg.app.cat  = s_cat;
+    dbg.app.item = s_item[s_cat];
+}
+
+void Route_Boot(void)
+{
+    route_apply();
+}
+
+void Route_KeyCat(void)
+{
+    s_cat = route_step_cat(s_cat, +1);
+    route_apply();
+    route_mark_dirty();
+}
+
+void Route_KeyItem(void)
+{
+    uint8_t n = route_item_count(s_cat);
+
+    if (n <= 1u) {
+        return;                             /* 只有一项：按键无效，不是故障 */
+    }
+
+    s_item[s_cat] = (uint8_t) ((s_item[s_cat] + 1u) % n);
+    route_apply();
+    route_mark_dirty();
+}
+
+void Route_Tick(void)
+{
+    if (s_dirty == 0u) {
+        return;
+    }
+
+    /* ---- 长按关机的安全网 ----
+     *
+     * PowerKey 在 USER1 按住 POWER_OFF_HOLD_MS(2000 ms) 后释放自锁，随后主循环会
+     * 停在 PowerKey_CheckShutdown() 里等硬件断电 —— **之后再也不会跑到这里**。
+     * 所以"按一次键切了类、2 s 内立刻长按关机"这种情况，下面那条 2 s 空闲策略
+     * 永远等不到，状态就丢了。这里在按住满 1 s 时提前落盘，留 1 s 余量。
+     *
+     * 短按（约 100 ms）够不到 1 s，所以不会因为每次按键都擦一次扇区。 */
+    if ((Key_IsDown(KEY_USER1) != 0u) && ((tick_ms - s_dirtyMs) >= 1000u)) {
+        route_save();
+        return;
+    }
+
+    if ((tick_ms - s_dirtyMs) < ROUTE_SAVE_DELAY_MS) {
+        return;
+    }
+
+    route_save();
+}
+
 /* ==================== 低电关机动作 ====================
  *
  * battery.c 只负责"判断低电"，具体怎么收场交给这里。
@@ -573,7 +806,10 @@ void App_CmdTask(void)
                     0x5Au, 0xA5u, 0x0Fu, 0xF0u, 0x3Cu, 0xC3u, 0x01u, 0x80u,
                     0x7Fu, 0xFEu, 0x12u, 0x34u, 0x56u, 0x78u, 0x9Au, 0xBCu
                 };
-                uint32_t addr = FLASH_STORE_BASE + (3u * FLASH_STORE_SECTOR);
+                /* ⚠ 必须是专用测试区：这里会擦 1 个扇区。
+                 * 以前写的是 FLASH_STORE_BASE + 3 扇区，基底搬到 0x18000 后
+                 * 那个地址正好是文字预设区 —— 一按 ftest 就擦掉预设。 */
+                uint32_t addr = FLASH_REG_TEST;
 
                 dbg.flash.runs++;
 
@@ -637,6 +873,64 @@ void App_CmdTask(void)
     }
 }
 
+/* ==================== USER3 长按 = 全局亮度 ==================== */
+
+/* 长按判定阈值。比 USER1 的关机阈值(2000ms)短，因为亮度是常调的；
+ * 800ms 足够和"短按切小项"区分开。 */
+#define APP_KEY_LONG_MS     (800u)
+
+/* 亮度档位：暗 → 亮，长按循环。用固定档位而不是连续加减，
+ * 是因为没有屏幕显示"当前多少"，档位跳变最容易感知。 */
+static uint8_t app_bright_next(void)
+{
+    static const uint8_t ladder[] = { 64u, 128u, 192u, 255u };
+    uint8_t cur  = s_bc;
+    uint8_t next = ladder[0];
+    uint8_t i;
+
+    for (i = 0u; i < (uint8_t) (sizeof(ladder) / sizeof(ladder[0])); i++) {
+        if (ladder[i] > cur) {
+            next = ladder[i];
+            break;
+        }
+    }
+
+    return next;
+}
+
+/* USER3：短按（松手）= 切小项；长按 ≥ APP_KEY_LONG_MS = 亮度跳一档。
+ * ⚠ 用"按住电平 + 时间"判定，而不是 in.key 的松开边沿 ——
+ *   长按必须在**按住期间**就生效，否则用户得先松手才知道成没成。 */
+static void app_user3_task(void)
+{
+    static uint8_t  s_down;
+    static uint8_t  s_long;
+    static uint32_t s_downMs;
+
+    if (Key_IsDown(KEY_USER3) != 0u) {
+        if (s_down == 0u) {
+            s_down   = 1u;
+            s_long   = 0u;
+            s_downMs = tick_ms;
+        } else if ((s_long == 0u) && ((tick_ms - s_downMs) >= APP_KEY_LONG_MS)) {
+            s_long = 1u;
+            App_SetBrightness(app_bright_next());
+            route_mark_dirty();             /* 让设置记录 2 s 后落盘 */
+        }
+        return;
+    }
+
+    if (s_down == 0u) {
+        return;                             /* 一直没按过 */
+    }
+
+    s_down = 0u;
+    if (s_long == 0u) {
+        Route_KeyItem();                    /* 短按：切小项 */
+    }
+    /* 长按的那次松手不再触发任何动作 —— 已经消费在亮度上了 */
+}
+
 /* ==================== 每帧 ==================== */
 
 void App_Tick(void)
@@ -651,21 +945,24 @@ void App_Tick(void)
      *   随机被承认成"按下"，拿它做切场景会莫名其妙跳场景，所以**不用它**。
      *   syscfg 里给 PA24 开了内部上拉，至少让读数稳定；以后焊上按键就能用。
      *
-     * 现有按键分配：
-     *   USER1 (PA25) 短按 = 下一个场景；**长按 2s = 关机**（走 TIMA0 中断）
-     *   USER3 (PA23)      = 上一个场景
+     * 按键分配（两级路由，见 asset_route.h / 多资源与两级按键方案.md §4）：
+     *   USER1 (PA25) 短按 = **切大类**；长按 2s = 关机（走 TIMA0 中断）
+     *   USER3 (PA23) 短按 = **切小类**（当前大类内循环）
      *
-     * USER1 短按不在这里消费掉是没道理的 —— 长按关机由 PowerKey 用
-     * Key_IsDown() 判断，和这里的 Key_TookPress() 边沿互不干扰，
-     * 所以按住 2s 关机的过程中会先切一次场景，无所谓。 */
+     * 两边都是**松发**触发（in.key 装的是松开边沿，见 App_ReadInput）。
+     * 长按关机由 PowerKey 用 Key_IsDown()（按住电平）判断，所以：
+     *   · 短按 → 松手那一刻切一次；
+     *   · 长按 2s → 关机过程中**不会**先切大类（以前压发会先切一次）。
+     */
     if ((in.key & APP_KEY_USER1) != 0u) {
         in.key = (uint8_t) (in.key & (uint8_t) ~APP_KEY_USER1);
-        App_Step(+1);
+        Route_KeyCat();
     }
-    if ((in.key & APP_KEY_USER3) != 0u) {
-        in.key = (uint8_t) (in.key & (uint8_t) ~APP_KEY_USER3);
-        App_Step(-1);
-    }
+
+    /* USER3 交给 app_user3_task()：它要区分"短按切小项"和"长按调亮度"，
+     * 光有松开边沿不够，得自己看电平和时长。这里把边沿位清掉即可。 */
+    in.key = (uint8_t) (in.key & (uint8_t) ~APP_KEY_USER3);
+    app_user3_task();
 
     if (s_scenes[s_cur].tick != 0) {
         s_scenes[s_cur].tick(&in);
@@ -745,8 +1042,10 @@ static void App_Init(void)
      * 校验失败 / 没存过 → 什么都不做，文字场景用内置字库。 */
     (void) GlyphStore_Load();
 
-    /* 进第一个场景。enter 里会自己画首帧。 */
-    App_Goto(0u);
+    /* 两级路由：先读设置记录（只读 Flash，不绘制），再按它进场景。
+     * 没存过 / 校验失败 → 默认 (流体, 0)，行为和以前完全一样。 */
+    Route_Init();
+    Route_Boot();
 }
 
 void App_Run(void)
@@ -774,6 +1073,9 @@ void App_Run(void)
 
         /* ---- 输入 + 全局事件 + 当前场景一步 ---- */
         App_Tick();
+
+        /* ---- 路由状态落盘：脏了且空闲 2 s 才真写 Flash（擦扇区会卡一帧）---- */
+        Route_Tick();
 
         /* ---- 串口：发遥测（DMA 忙就丢帧，绝不等待）---- */
         VOFA_Tick();

@@ -119,3 +119,85 @@ uint16_t FlashStore_Crc16(uint16_t crc, const uint8_t *p, uint32_t len)
 
     return crc;
 }
+
+/* ==================== 设置记录 ====================
+ *
+ * 布局见 flash_store.h。记录占 16 B（前 12 B 有效，其余补 0xFF）。
+ *
+ * 这里不需要 glyph_store 那种"头部最后写"的两阶段提交：整条记录只有一个
+ * flash word 对（12 B），要么写进去要么没写进去，crc 足以判出半截数据。
+ */
+#define SETTINGS_REC_SIZE   (16u)
+#define SETTINGS_CRC_LEN    (10u)       /* 字节 0..9 */
+
+static void settings_encode(uint8_t *rec, const flash_settings_t *s)
+{
+    uint16_t crc;
+    uint32_t i;
+
+    for (i = 0u; i < SETTINGS_REC_SIZE; i++) {
+        rec[i] = 0xFFu;                 /* flash 擦除态 */
+    }
+
+    rec[0] = (uint8_t) (FLASH_SETTINGS_MAGIC & 0xFFu);
+    rec[1] = (uint8_t) (FLASH_SETTINGS_MAGIC >> 8);
+    rec[2] = (uint8_t) FLASH_SETTINGS_VERSION;
+    rec[3] = s->cat;
+    rec[4] = s->item[0];
+    rec[5] = s->item[1];
+    rec[6] = s->item[2];
+    rec[7] = s->item[3];
+    rec[8] = s->bc;
+    rec[9] = 0u;                        /* reserved，置 0 而不是 0xFF */
+
+    crc = FlashStore_Crc16(0xFFFFu, rec, SETTINGS_CRC_LEN);
+    rec[10] = (uint8_t) (crc & 0xFFu);
+    rec[11] = (uint8_t) (crc >> 8);
+}
+
+uint8_t FlashStore_SettingsLoad(flash_settings_t *out)
+{
+    const uint8_t *p = (const uint8_t *) FLASH_REG_SETTINGS;
+    uint8_t  rec[SETTINGS_REC_SIZE];
+    uint16_t magic;
+    uint16_t crc;
+    uint16_t calc;
+
+    /* 逐字节 memcpy 到局部：M0+ 不支持非对齐访问，不能强转成结构体指针读 */
+    memcpy(rec, p, SETTINGS_REC_SIZE);
+
+    magic = (uint16_t) ((uint16_t) rec[0] | ((uint16_t) rec[1] << 8));
+    crc   = (uint16_t) ((uint16_t) rec[10] | ((uint16_t) rec[11] << 8));
+    calc  = FlashStore_Crc16(0xFFFFu, rec, SETTINGS_CRC_LEN);
+
+    if ((magic != FLASH_SETTINGS_MAGIC) ||
+        (rec[2] != (uint8_t) FLASH_SETTINGS_VERSION) ||
+        (crc != calc)) {
+        return 0u;
+    }
+
+    out->cat     = rec[3];
+    out->item[0] = rec[4];
+    out->item[1] = rec[5];
+    out->item[2] = rec[6];
+    out->item[3] = rec[7];
+    out->bc      = rec[8];
+
+    return 1u;
+}
+
+uint8_t FlashStore_SettingsSave(const flash_settings_t *in)
+{
+    uint8_t rec[SETTINGS_REC_SIZE];
+
+    settings_encode(rec, in);
+
+    if (FlashStore_Erase(FLASH_REG_SETTINGS, 1u) == 0u) {
+        return 0u;
+    }
+    if (FlashStore_Write(FLASH_REG_SETTINGS, rec, SETTINGS_REC_SIZE) == 0u) {
+        return 0u;
+    }
+
+    return FlashStore_Verify(FLASH_REG_SETTINGS, rec, SETTINGS_REC_SIZE);
+}

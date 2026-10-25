@@ -28,6 +28,8 @@ static const key_pin_t s_keyPin[KEY_NUM] = {
 static volatile uint8_t s_stable[KEY_NUM];
 static uint8_t          s_differ[KEY_NUM];   /* 已连续多少拍读到"和稳定值不一样" */
 static volatile uint8_t s_pressed[KEY_NUM];  /* "按下"边沿标志，Key_TookPress() 读后清 */
+static volatile uint8_t s_released[KEY_NUM]; /* "松开"边沿标志，Key_TookRelease() 读后清 */
+static uint8_t          s_armRel[KEY_NUM];   /* 1 = 见过一次"按下"，这次松开才算数 */
 
 /* 原始电平 → 是否按下。三根脚都是"按下 = 低"（上拉 + 按键接地）；
  * 以后若有某根脚接法是"按下 = 高"，就在这里按 id 分开处理。 */
@@ -47,6 +49,13 @@ void Key_Init(void)
         s_stable[i]  = KeyRawIsDown((key_id_t) i);
         s_differ[i]  = 0u;
         s_pressed[i] = 0u;
+        s_released[i] = 0u;
+
+        /* ⚠ 松发边沿必须"上电后才武装"：
+         *   一键开关机就是靠**按住 USER1** 上电的，如果开机时正按着的那次松开
+         *   也被当成一次"松开事件"，一上电就会立刻切一次大类。
+         *   所以初值一律 0：必须等到真的看见一次"按下"，之后的松开才算数。 */
+        s_armRel[i]  = 0u;
     }
 }
 
@@ -67,7 +76,11 @@ void Key_Task(void)
             s_differ[i] = 0u;
             if (raw != 0u) {
                 s_pressed[i] = 1u;          /* 记一次"按下"边沿 */
+                s_armRel[i]  = 1u;          /* 这次按下之后，松开才有效 */
                 dbg.key.press_cnt[i]++;
+            } else if (s_armRel[i] != 0u) {
+                s_released[i] = 1u;         /* 记一次"松开"边沿（必须是武装过的）*/
+                s_armRel[i]   = 0u;
             }
         }
 
@@ -93,5 +106,13 @@ uint8_t Key_TookPress(key_id_t k)
     uint8_t v = s_pressed[k];
 
     s_pressed[k] = 0u;                      /* 读后清 */
+    return v;
+}
+
+uint8_t Key_TookRelease(key_id_t k)
+{
+    uint8_t v = s_released[k];
+
+    s_released[k] = 0u;                     /* 读后清 */
     return v;
 }

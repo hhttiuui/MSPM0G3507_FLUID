@@ -356,6 +356,17 @@ typedef struct {
 #define DBG_CMD_TEXT_LEV            0x0403u  /* arg[0]: 文字亮度 0~255 */
 #define DBG_CMD_TEXT_POS            0x0404u  /* arg[0]: 直接跳到滚动位置（定格看）*/
 #define DBG_CMD_TEXT_ORIENT         0x0405u  /* arg[0]: 0~3 手动固定方向，4 = 自动跟随重力 */
+#define DBG_CMD_TEXT_TPCLR          0x0406u  /* tpclr          清空文字预设区（擦 2 个扇区 + 写头）*/
+#define DBG_CMD_TEXT_TPADD          0x0407u  /* tpadd          把当前文字+滚动参数追加成一条预设 */
+#define DBG_CMD_TEXT_TPLOAD         0x0408u  /* tpload <i>     应用第 i 条预设（文字+参数一起）*/
+#define DBG_CMD_TEXT_INV            0x0409u  /* tinv 0/1       文字反色（亮底黑字）*/
+
+/* ---- 几何动画（场景 4）---- */
+#define DBG_CMD_GEOM_ANIM           0x0500u  /* ganim <0-1>    0 弹跳球 / 1 旋转立方体 */
+#define DBG_CMD_GEOM_TAIL           0x0501u  /* gtail <0-8>    拖尾长度，0 = 不拖尾 */
+#define DBG_CMD_GEOM_BALL           0x0502u  /* gball <1-6>    弹跳球半径（像素）*/
+#define DBG_CMD_GEOM_KICK           0x0503u  /* gkick <1-8>    碰边后固定的弹起速度（px/帧）*/
+#define DBG_CMD_GEOM_DAMP           0x0504u  /* gdamp <0-8>    水平阻尼：0 = 关，越大衰减越快 */
 
 /* 场景框架的观测量。切没切成功、切了几次，看这里最直接。 */
 typedef struct {
@@ -363,6 +374,8 @@ typedef struct {
     uint8_t scene_cnt;      /* 场景总数 */
     uint8_t switches;       /* 累计切换次数（含开机那次）*/
     uint8_t rot;            /* 文字场景当前生效的旋转：0/1/2/3 */
+    uint8_t cat;            /* 当前大类（route_cat_t）：0 流体 / 1 文字 / 2 图像 / 3 几何 */
+    uint8_t item;           /* 当前小类（大类内下标，从 0 起）*/
 } dbg_app_t;
 
 typedef struct {
