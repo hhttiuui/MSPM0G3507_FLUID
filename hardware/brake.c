@@ -108,6 +108,14 @@ static void brk_draw(void)
     LedMatrix_Flush();
 }
 
+/* Q24 模拟单位 → mg。标定用，两个轴都要算，所以单独抽出来。 */
+static int16_t brk_to_mg(_iq v)
+{
+    int32_t t = (int32_t) (((int64_t) v * 1000) / (int64_t) _IQ(9.8f));
+
+    return (int16_t) ((t > 32767) ? 32767 : ((t < -32768) ? -32768 : t));
+}
+
 /* ==================== 状态机 ==================== */
 
 static void brk_snapshot(void)
@@ -212,14 +220,25 @@ void Brake_Init(void)
 
 void Brake_Tick(const app_in_t *in)
 {
-    int32_t  raw, mg, a;
+    int32_t  raw, mg, decel;
     uint32_t dt;
 
-    /* ---- 取轴 + 符号（屏幕坐标，映射见 app.c 顶部）---- */
+    /* ---- 两个轴的原始值都换算成 mg 存进 dbg（**标定就靠这两个数**）----
+     * 静止时：重力压在哪个轴上，那个轴就是 ±1000 mg 左右；
+     * 另一个接近 0 的才是"行进方向"轴，刹车检测要选它。
+     * 这两个值是**未滤波、未选轴**的，就是屏幕坐标下的原始加速度。 */
+    dbg.brake.rawx_mg = brk_to_mg(in->ax_raw);
+    dbg.brake.rawy_mg = brk_to_mg(in->ay_raw);
+
+    /* ---- 取轴 → 转成"减速度" ----
+     * ⚠ 这里必须**有符号**。以前用 |v|，结果是：
+     *   ① brksgn 完全不起作用（绝对值把符号吃掉了）；
+     *   ② 起步猛蹬（0.2 g 以上）和刹车一样会点亮 —— 方向反了。
+     * 现在定义 decel = 沿行进方向的减速度（正 = 正在减速）：
+     *   s_sign = +1 表示"行进方向 = 轴的正方向"，刹车时原始值变负，取反得正；
+     *   s_sign = -1 表示行进方向是轴的反方向，刹车时原始值变正，直接用。
+     */
     raw = (s_axis == 0u) ? in->ax_raw : in->ay_raw;
-    if (s_sign < 0) {
-        raw = -raw;
-    }
 
     /* Q24 模拟单位 → mg（9.8 对应 1000 mg）。
      * 注意这里是**整数域**的换算，不是 _IQmpy —— 用 _IQmpy 会把
@@ -230,8 +249,11 @@ void Brake_Tick(const app_in_t *in)
     s_filtMg += (int32_t) (((int64_t) BRK_LPF_ALPHA * (int64_t) (mg - s_filtMg))
                            >> IQ_SHIFT);
 
-    dbg.brake.val_mg = (int16_t) ((s_filtMg > 32767) ? 32767
-                                  : ((s_filtMg < -32768) ? -32768 : s_filtMg));
+    /* 减速度：正 = 正在减速（就是"该亮刹车灯"的方向）*/
+    decel = (s_sign > 0) ? -s_filtMg : s_filtMg;
+
+    dbg.brake.val_mg = (int16_t) ((decel > 32767) ? 32767
+                                  : ((decel < -32768) ? -32768 : decel));
 
     /* ---- 强制模式：跳过检测，直接维持刹车态（拍摄 / 演示）---- */
     if (s_forced != 0u) {
@@ -254,16 +276,16 @@ void Brake_Tick(const app_in_t *in)
         return;
     }
 
-    /* ---- 滞回计时 ----
-     * 中间地带（rel < |v| < thr）两个计时器都**不动**，这就是滞回：
-     * 已经在刹车态时不会被 100 mg 的抖动打断，不在刹车态时也不会被误触发。 */
-    a  = (s_filtMg < 0) ? -s_filtMg : s_filtMg;
+    /* ---- 滞回计时（**有符号**：只看减速方向）----
+     * decel ≥ thr        → 正在刹车
+     * decel ≤ rel(60mg)  → 没在刹车（含"正在加速"，decel 为负）
+     * 中间地带两个计时器都不动，这就是滞回。 */
     dt = (in->dt_ms != 0u) ? (uint32_t) in->dt_ms : 1u;
 
-    if (a >= (int32_t) s_thrMg) {
+    if (decel >= (int32_t) s_thrMg) {
         s_aboveMs += dt;
         s_belowMs  = 0u;
-    } else if (a <= (int32_t) s_relMg) {
+    } else if (decel <= (int32_t) s_relMg) {
         s_belowMs += dt;
         s_aboveMs  = 0u;
     }

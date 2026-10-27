@@ -8,6 +8,7 @@ SHELL = cmd.exe
 C_SRCS += \
 ../hardware/app.c \
 ../hardware/battery.c \
+../hardware/brake.c \
 ../hardware/clock.c \
 ../hardware/debug.c \
 ../hardware/flash_store.c \
@@ -24,13 +25,13 @@ C_SRCS += \
 ../hardware/scene_frame.c \
 ../hardware/scene_still.c \
 ../hardware/scene_text.c \
-../hardware/brake.c  \
 ../hardware/vcmd.c \
 ../hardware/vofa.c 
 
 C_DEPS += \
 ./hardware/app.d \
 ./hardware/battery.d \
+./hardware/brake.d \
 ./hardware/clock.d \
 ./hardware/debug.d \
 ./hardware/flash_store.d \
@@ -47,13 +48,13 @@ C_DEPS += \
 ./hardware/scene_frame.d \
 ./hardware/scene_still.d \
 ./hardware/scene_text.d \
-./hardware/brake.d  \
 ./hardware/vcmd.d \
 ./hardware/vofa.d 
 
 OBJS += \
 ./hardware/app.o \
 ./hardware/battery.o \
+./hardware/brake.o \
 ./hardware/clock.o \
 ./hardware/debug.o \
 ./hardware/flash_store.o \
@@ -70,13 +71,13 @@ OBJS += \
 ./hardware/scene_frame.o \
 ./hardware/scene_still.o \
 ./hardware/scene_text.o \
-./hardware/brake.o  \
 ./hardware/vcmd.o \
 ./hardware/vofa.o 
 
 OBJS__QUOTED += \
 "hardware\app.o" \
 "hardware\battery.o" \
+"hardware\brake.o" \
 "hardware\clock.o" \
 "hardware\debug.o" \
 "hardware\flash_store.o" \
@@ -93,13 +94,13 @@ OBJS__QUOTED += \
 "hardware\scene_frame.o" \
 "hardware\scene_still.o" \
 "hardware\scene_text.o" \
-"hardware\brake.o"  \
 "hardware\vcmd.o" \
 "hardware\vofa.o" 
 
 C_DEPS__QUOTED += \
 "hardware\app.d" \
 "hardware\battery.d" \
+"hardware\brake.d" \
 "hardware\clock.d" \
 "hardware\debug.d" \
 "hardware\flash_store.d" \
@@ -116,13 +117,13 @@ C_DEPS__QUOTED += \
 "hardware\scene_frame.d" \
 "hardware\scene_still.d" \
 "hardware\scene_text.d" \
-"hardware\brake.d"  \
 "hardware\vcmd.d" \
 "hardware\vofa.d" 
 
 C_SRCS__QUOTED += \
 "../hardware/app.c" \
 "../hardware/battery.c" \
+"../hardware/brake.c" \
 "../hardware/clock.c" \
 "../hardware/debug.c" \
 "../hardware/flash_store.c" \
@@ -139,7 +140,6 @@ C_SRCS__QUOTED += \
 "../hardware/scene_frame.c" \
 "../hardware/scene_still.c" \
 "../hardware/scene_text.c" \
-"../hardware/brake.c"  \
 "../hardware/vcmd.c" \
 "../hardware/vofa.c" 
 

@@ -280,17 +280,25 @@ typedef struct {
 
 /* ---- 刹车高亮（实现见 hardware/brake.c）----
  *
- * 判读：
- *   val_mg 静止时应在 ±30 mg 内漂   → 超出说明轴选错（brkax）或噪声大
- *   val_mg 刹车时方向反了           → brksgn 翻符号
- *   count 一直涨但没刹车            → 阈值太低（brkthr 加）或轴选错
- *   active 不跟随 val_mg            → 检查 enabled / imu_use */
+ * **标定就看 rawx_mg / rawy_mg 这两个数**（未滤波、未选轴）：
+ *   ① 静止（板子装好、车直立）：±1000 左右的那个轴 = 重力轴，别选它；
+ *      接近 0（±50）的那个轴 = 行进方向 → brkax 选它
+ *   ② 推车加速：记下该轴读数的符号（= 前进方向）
+ *   ③ 捏刹车：符号应相反。此时看 val_mg —— 它已经是"减速度"，
+ *      **为正且幅度够大 = 方向对了**；为负 = brksgn 翻一下
+ *
+ * 其它判读：
+ *   count 一直涨但没刹车  → 阈值太低（brkthr 加）或轴选错
+ *   active 不跟随 val_mg  → 检查 enabled / imu_use
+ *   val_mg 静止时接近 ±1000 → 轴选到重力轴上了（brkax 换一个）*/
 typedef struct {
     uint8_t  active;    /* 1 = 正在刹车高亮（显示权被接管）*/
     uint8_t  enabled;   /* 1 = 检测开启（brk 0 可关）*/
     uint8_t  disp;      /* 刹车时显示哪种画面（BRAKE_DISP_*）*/
     uint8_t  forced;    /* 1 = 强制刹车态（brkf，演示 / 拍摄用）*/
-    int16_t  val_mg;    /* 滤波后的轴加速度（mg，带符号）*/
+    int16_t  val_mg;    /* 沿行进方向的**减速度**（mg，正 = 正在减速）*/
+    int16_t  rawx_mg;   /* 屏幕 x 轴原始加速度（未滤波，mg）← 标定用 */
+    int16_t  rawy_mg;   /* 屏幕 y 轴原始加速度（未滤波，mg）← 标定用 */
     uint16_t thr_mg;    /* 当前触发阈值（mg）*/
     uint16_t count;     /* 累计触发次数 */
 } dbg_brake_t;

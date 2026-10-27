@@ -8,6 +8,7 @@
 "./hardware/IMU660RB/lsm6dsr_reg.o"
 "./hardware/app.o"
 "./hardware/battery.o"
+"./hardware/brake.o"
 "./hardware/clock.o"
 "./hardware/debug.o"
 "./hardware/flash_store.o"

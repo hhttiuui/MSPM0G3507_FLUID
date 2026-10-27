@@ -70,7 +70,7 @@ static uint16_t frame_build(void)
     uint8_t sent = 0u;
     uint8_t ch;
 
-    for (ch = 0u; ch < 11u; ch++) {
+    for (ch = 0u; ch < 14u; ch++) {
         int32_t v;
 
         if ((s_mask & (uint16_t) (1u << ch)) == 0u) {
@@ -91,7 +91,12 @@ static uint16_t frame_build(void)
             /* 旋转方向：确认自动判定到底转没转、转对没转 */
             case VOFA_CH_ROT:      v = (int32_t) dbg.app.rot;            break;
             /* 刹车高亮：标定时看它跟不跟 val_mg 走 */
-            default:               v = (int32_t) dbg.brake.active;       break;
+            case VOFA_CH_BRAKE:    v = (int32_t) dbg.brake.active;       break;
+            /* 两个轴的原始加速度 —— 选轴 / 定符号就看这两路 */
+            case VOFA_CH_RAWX:     v = (int32_t) dbg.brake.rawx_mg;      break;
+            case VOFA_CH_RAWY:     v = (int32_t) dbg.brake.rawy_mg;      break;
+            /* 减速度：正 = 正在减速。阈值就是拿它比的 */
+            default:               v = (int32_t) dbg.brake.val_mg;       break;
         }
 
         if (sent != 0u) {
@@ -151,7 +156,7 @@ void VOFA_SetDivShift(uint32_t n)
 
 void VOFA_SetMask(uint32_t mask)
 {
-    s_mask = (uint16_t) (mask & 0x07FFu);
+    s_mask = (uint16_t) (mask & 0x3FFFu);
 
     dbg.uart.mask = s_mask;
 }
