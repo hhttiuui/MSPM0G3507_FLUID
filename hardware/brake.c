@@ -46,6 +46,22 @@
  * 大于阈值，灯会**永久亮着**（只能等倾角反向）。超时就强制释放并重同步基线。 */
 #define BRK_MAX_ON_MS       (20000u)
 
+/* ---- 旋转门控（陀螺）----
+ *
+ * 拿起、放下、装壳、磕碰时，板子被**转动**，重力在法线上的投影会跟着变
+ * （实测：立起来那一下 AZ 从 ~1000 掉到 ~195，相当于 800 mg 的"加速度"），
+ * 基线追不上，就会被当成刹车点亮 —— 这就是"一竖直放就有问题"的原因。
+ *
+ * 但刹车本身**不转动**板子：直线刹车时陀螺读数接近 0。所以陀螺在这里
+ * 的正确用途不是"测刹车"，而是**判断板子正在被转动，从而屏蔽检测**。
+ *
+ * 阈值 70 °/s：手持转动一般 90~300 °/s，而刹车时前叉下沉带来的俯仰
+ * 只有 5~15 °/s，两者差得很开。
+ * 只有持续转动超过 150 ms 才认为"姿态变了"并重同步基线 ——
+ * 短暂抖动（过坎、急刹点头）不会把基线冲掉。 */
+#define BRK_ROT_GATE_MDPS   (70000)     /* 70 °/s */
+#define BRK_ROT_HOLD_MS     (150u)
+
 /* 刹车画面重推间隔。流体场景一帧 21 ms，这个值必须比它小，
  * 否则会漏掉场景的重绘、出现"闪回液体一帧"。 */
 #define BRK_REDRAW_MS       (15u)
@@ -63,6 +79,8 @@ static uint8_t  s_axis = 2u;        /* 0 = 屏幕 x，1 = 屏幕 y，2 = 屏幕�
 static int8_t   s_sign = +1;        /* 行进方向对应哪个符号 */
 static int32_t  s_baseQ8;           /* 基线（Q8，单位 1/256 mg）：重力投影 + 倾角 */
 static uint8_t  s_baseInit;         /* 0 = 还没播种 */
+static uint8_t  s_rotHold;          /* 1 = 正在被转动，检测挂起 */
+static uint32_t s_rotMs;            /* 本轮转动已持续多久 */
 static uint16_t s_thrMg = BRK_THR_DEF_MG;
 static uint16_t s_relMg = BRK_REL_DEF_MG;
 static uint8_t  s_disp  = BRAKE_DISP_SOLID;
@@ -216,6 +234,8 @@ void Brake_Init(void)
     s_sign      = +1;
     s_baseQ8    = 0;
     s_baseInit  = 0u;
+    s_rotHold   = 0u;
+    s_rotMs     = 0u;
     s_thrMg     = BRK_THR_DEF_MG;
     s_relMg     = BRK_REL_DEF_MG;
     s_disp      = BRAKE_DISP_SOLID;
@@ -236,7 +256,8 @@ void Brake_Init(void)
     dbg.brake.rawx_mg = 0;
     dbg.brake.rawy_mg = 0;
     dbg.brake.rawz_mg = 0;
-    dbg.brake.base_mg = 0;
+    dbg.brake.base_mg  = 0;
+    dbg.brake.rotating = 0u;
     dbg.brake.thr_mg  = s_thrMg;
     dbg.brake.count   = 0u;
 }
@@ -272,6 +293,7 @@ void Brake_Tick(const app_in_t *in)
      * 注意这里是**整数域**的换算，不是 _IQmpy —— 用 _IQmpy 会把
      * alpha(≈4e6) 乘上 mg 值，32 位溢出后结果完全错。 */
     mg = (int32_t) (((int64_t) raw * 1000) / (int64_t) _IQ(9.8f));
+    dt = (in->dt_ms != 0u) ? (uint32_t) in->dt_ms : 1u;
 
     /* ---- 减去基线 ----
      * 这一步是能选 AZ 的前提。板子竖装但总有几度倾斜，实测 AZ 静止读到
@@ -315,12 +337,51 @@ void Brake_Tick(const app_in_t *in)
         return;
     }
 
+    /* ---- 旋转门控：板子正在被转动时，加速度读数不可信 ----
+     * 挂起检测、清计时器；已经点亮的立刻熄灭（"放桌上"不该亮刹车灯）。
+     * 转动结束后：只有转得够久（说明姿态真的变了）才重同步基线。 */
+    {
+        int32_t wx = (dbg.phy.gx_mdps < 0) ? -dbg.phy.gx_mdps : dbg.phy.gx_mdps;
+        int32_t wy = (dbg.phy.gy_mdps < 0) ? -dbg.phy.gy_mdps : dbg.phy.gy_mdps;
+        int32_t wz = (dbg.phy.gz_mdps < 0) ? -dbg.phy.gz_mdps : dbg.phy.gz_mdps;
+        int32_t w  = wx;
+
+        if (wy > w) { w = wy; }
+        if (wz > w) { w = wz; }
+
+        if (w > (int32_t) BRK_ROT_GATE_MDPS) {
+            if (s_rotHold == 0u) {
+                s_rotHold = 1u;
+                s_rotMs   = 0u;
+            }
+            s_rotMs += dt;
+            s_aboveMs = 0u;
+            s_belowMs = 0u;
+            dbg.brake.rotating = 1u;
+
+            if (s_active != 0u) {
+                brk_deactivate();
+            }
+            return;
+        }
+
+        if (s_rotHold != 0u) {
+            s_rotHold = 0u;
+            dbg.brake.rotating = 0u;
+
+            if (s_rotMs >= (uint32_t) BRK_ROT_HOLD_MS) {
+                s_baseQ8   = mg << 8;       /* 姿态变了：把当前读数当新基线 */
+                s_baseInit = 1u;
+                dbg.brake.base_mg = (int16_t) mg;
+            }
+            s_rotMs = 0u;
+        }
+    }
+
     /* ---- 滞回计时（**有符号**：只看减速方向）----
      * decel ≥ thr        → 正在刹车
      * decel ≤ rel(60mg)  → 没在刹车（含"正在加速"，decel 为负）
      * 中间地带两个计时器都不动，这就是滞回。 */
-    dt = (in->dt_ms != 0u) ? (uint32_t) in->dt_ms : 1u;
-
     if (decel >= (int32_t) s_thrMg) {
         s_aboveMs += dt;
         s_belowMs  = 0u;

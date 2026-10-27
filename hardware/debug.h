@@ -296,6 +296,7 @@ typedef struct {
     uint8_t  enabled;   /* 1 = 检测开启（brk 0 可关）*/
     uint8_t  disp;      /* 刹车时显示哪种画面（BRAKE_DISP_*）*/
     uint8_t  forced;    /* 1 = 强制刹车态（brkf，演示 / 拍摄用）*/
+    uint8_t  rotating;  /* 1 = 检测到板子正在被转动（陀螺门控生效中）*/
     int16_t  val_mg;    /* 沿行进方向的**减速度**（mg，正 = 正在减速）*/
     int16_t  rawx_mg;   /* 屏幕 x 轴原始加速度（未滤波，mg）← 标定用 */
     int16_t  rawy_mg;   /* 屏幕 y 轴原始加速度（未滤波，mg）← 标定用 */
