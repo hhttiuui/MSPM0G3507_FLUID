@@ -299,6 +299,8 @@ typedef struct {
     int16_t  val_mg;    /* 沿行进方向的**减速度**（mg，正 = 正在减速）*/
     int16_t  rawx_mg;   /* 屏幕 x 轴原始加速度（未滤波，mg）← 标定用 */
     int16_t  rawy_mg;   /* 屏幕 y 轴原始加速度（未滤波，mg）← 标定用 */
+    int16_t  rawz_mg;   /* 屏幕法线轴原始加速度（未滤波，mg）← 标定用（默认轴）*/
+    int16_t  base_mg;   /* 当前基线（重力投影 + 倾角），应≈静止时 rawz_mg */
     uint16_t thr_mg;    /* 当前触发阈值（mg）*/
     uint16_t count;     /* 累计触发次数 */
 } dbg_brake_t;

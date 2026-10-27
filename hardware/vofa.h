@@ -47,8 +47,10 @@
 #define VOFA_CH_RAWX       11u  /* 屏幕 x 原始加速度 mg（标定用）*/
 #define VOFA_CH_RAWY       12u  /* 屏幕 y 原始加速度 mg（标定用）*/
 #define VOFA_CH_DECEL      13u  /* 沿行进方向的减速度 mg（正 = 正在减速）*/
+#define VOFA_CH_RAWZ       14u  /* 屏幕法线原始加速度 mg（默认检测轴）*/
+#define VOFA_CH_BASE       15u  /* 当前基线 mg（应≈静止时的 rawz）*/
 
-#define VOFA_CH_ALL        0x3FFFu  /* 14 路全开，mask 取值 0~16383 */
+#define VOFA_CH_ALL        0xFFFFu  /* 16 路全开，mask 取值 0~65535 */
 #define VOFA_CH_DEFAULT    0x000Fu  /* 默认只开前 4 路：sim/fps/ax/ay */
 
 /* ---- 分频：0 = 关闭；n = 每 2^n 帧发一帧 ----

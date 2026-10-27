@@ -53,6 +53,9 @@ typedef struct {
      * 完全不是一回事，共用一份只会互相拖累。
      * ⚠ 没有 IMU 时这两个字段恒为 0。 */
     _iq      ax_raw, ay_raw;
+    _iq      az_raw;            /* 屏幕**法线**方向的原始加速度（芯片 AZ）
+                                 * 板子竖装、屏幕朝后时，法线≈水平 = 行进方向，
+                                 * 刹车检测用的就是这个轴（见 brake.h）。 */
 
     uint32_t now_ms;            /* tick_ms 快照 */
     uint16_t dt_ms;             /* 距上次 tick 的毫秒数（首帧为 0）*/

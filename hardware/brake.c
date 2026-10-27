@@ -31,6 +31,21 @@
 #define BRK_OFF_MS          (350u)
 #define BRK_MIN_ON_MS       (400u)
 
+/* 基线跟随速度：每帧走 1/128，46 Hz 下 τ ≈ 2.8 s。
+ * 基线 = "静止/匀速时该轴的读数"，里面装着**重力投影 + 安装倾角**，
+ * 刹车检测比的是"偏离基线多少"，不是绝对值。见文件头《为什么必须减基线》。
+ *
+ * ⚠ 基线用 **Q8 定点**（单位 1/256 mg）保存，不能直接对 mg 做 `>> shift`：
+ *   偏差小于 2^shift 时右移结果是 0，基线就**完全不动**了。实测 10 s 内
+ *   倾斜 10°（偏差 200 mg）时基线一直卡在初值，最后把刹车灯点死 —— 仿真复现。
+ *   改成 Q8 后每帧增量 = 偏差/128 mg，小数部分不会丢。 */
+#define BRK_BASE_SHIFT      (7u)
+
+/* 最长连续刹车时间（安全阀）。真实刹车即使长下坡也极少连续 20 s 不松；
+ * 而"陡坡 / 颠簸 / 磕碰"造成的误触发如果不兜住，基线被冻结后 dev 一直
+ * 大于阈值，灯会**永久亮着**（只能等倾角反向）。超时就强制释放并重同步基线。 */
+#define BRK_MAX_ON_MS       (20000u)
+
 /* 刹车画面重推间隔。流体场景一帧 21 ms，这个值必须比它小，
  * 否则会漏掉场景的重绘、出现"闪回液体一帧"。 */
 #define BRK_REDRAW_MS       (15u)
@@ -44,8 +59,10 @@
 static uint8_t  s_enabled = 1u;     /* brk 0 可关掉检测 */
 static uint8_t  s_forced;           /* brkf 1 强制进入（演示 / 拍摄）*/
 static uint8_t  s_active;           /* 1 = 正在刹车高亮 */
-static uint8_t  s_axis;             /* 0 = 屏幕 x，1 = 屏幕 y */
+static uint8_t  s_axis = 2u;        /* 0 = 屏幕 x，1 = 屏幕 y，2 = 屏幕法线(AZ) */
 static int8_t   s_sign = +1;        /* 行进方向对应哪个符号 */
+static int32_t  s_baseQ8;           /* 基线（Q8，单位 1/256 mg）：重力投影 + 倾角 */
+static uint8_t  s_baseInit;         /* 0 = 还没播种 */
 static uint16_t s_thrMg = BRK_THR_DEF_MG;
 static uint16_t s_relMg = BRK_REL_DEF_MG;
 static uint8_t  s_disp  = BRAKE_DISP_SOLID;
@@ -195,8 +212,10 @@ void Brake_Init(void)
     s_enabled   = 1u;
     s_forced    = 0u;
     s_active    = 0u;
-    s_axis      = 0u;
+    s_axis      = 2u;               /* 默认屏幕法线：尾灯朝后装时它就是行进方向 */
     s_sign      = +1;
+    s_baseQ8    = 0;
+    s_baseInit  = 0u;
     s_thrMg     = BRK_THR_DEF_MG;
     s_relMg     = BRK_REL_DEF_MG;
     s_disp      = BRAKE_DISP_SOLID;
@@ -214,13 +233,17 @@ void Brake_Init(void)
     dbg.brake.disp    = s_disp;
     dbg.brake.forced  = 0u;
     dbg.brake.val_mg  = 0;
+    dbg.brake.rawx_mg = 0;
+    dbg.brake.rawy_mg = 0;
+    dbg.brake.rawz_mg = 0;
+    dbg.brake.base_mg = 0;
     dbg.brake.thr_mg  = s_thrMg;
     dbg.brake.count   = 0u;
 }
 
 void Brake_Tick(const app_in_t *in)
 {
-    int32_t  raw, mg, decel;
+    int32_t  raw, mg, dev, decel;
     uint32_t dt;
 
     /* ---- 两个轴的原始值都换算成 mg 存进 dbg（**标定就靠这两个数**）----
@@ -229,8 +252,9 @@ void Brake_Tick(const app_in_t *in)
      * 这两个值是**未滤波、未选轴**的，就是屏幕坐标下的原始加速度。 */
     dbg.brake.rawx_mg = brk_to_mg(in->ax_raw);
     dbg.brake.rawy_mg = brk_to_mg(in->ay_raw);
+    dbg.brake.rawz_mg = brk_to_mg(in->az_raw);
 
-    /* ---- 取轴 → 转成"减速度" ----
+    /* ---- 取轴 → 减基线 → 转成"减速度" ----
      * ⚠ 这里必须**有符号**。以前用 |v|，结果是：
      *   ① brksgn 完全不起作用（绝对值把符号吃掉了）；
      *   ② 起步猛蹬（0.2 g 以上）和刹车一样会点亮 —— 方向反了。
@@ -238,15 +262,30 @@ void Brake_Tick(const app_in_t *in)
      *   s_sign = +1 表示"行进方向 = 轴的正方向"，刹车时原始值变负，取反得正；
      *   s_sign = -1 表示行进方向是轴的反方向，刹车时原始值变正，直接用。
      */
-    raw = (s_axis == 0u) ? in->ax_raw : in->ay_raw;
+    switch (s_axis) {
+        case 0u:  raw = in->ax_raw; break;      /* 屏幕 x（板面内横向）*/
+        case 1u:  raw = in->ay_raw; break;      /* 屏幕 y（板面内竖向）*/
+        default:  raw = in->az_raw; break;      /* 屏幕法线（= 行进方向）*/
+    }
 
     /* Q24 模拟单位 → mg（9.8 对应 1000 mg）。
      * 注意这里是**整数域**的换算，不是 _IQmpy —— 用 _IQmpy 会把
      * alpha(≈4e6) 乘上 mg 值，32 位溢出后结果完全错。 */
     mg = (int32_t) (((int64_t) raw * 1000) / (int64_t) _IQ(9.8f));
 
+    /* ---- 减去基线 ----
+     * 这一步是能选 AZ 的前提。板子竖装但总有几度倾斜，实测 AZ 静止读到
+     * +195 mg（≈11° 倾角的重力投影）—— 直接拿它比 150 mg 阈值会永远触发。
+     * 减掉基线后，静止时 dev ≈ 0，刹车时 dev 才是纯运动加速度。 */
+    if (s_baseInit == 0u) {
+        s_baseQ8   = mg << 8;
+        s_baseInit = 1u;
+    }
+
+    dev = mg - (s_baseQ8 >> 8);
+
     /* ---- 一阶低通：y += α(x − y)。用 64 位算，避免 _IQmpy 的饱和 ---- */
-    s_filtMg += (int32_t) (((int64_t) BRK_LPF_ALPHA * (int64_t) (mg - s_filtMg))
+    s_filtMg += (int32_t) (((int64_t) BRK_LPF_ALPHA * (int64_t) (dev - s_filtMg))
                            >> IQ_SHIFT);
 
     /* 减速度：正 = 正在减速（就是"该亮刹车灯"的方向）*/
@@ -300,6 +339,33 @@ void Brake_Tick(const app_in_t *in)
             ((uint32_t) (in->now_ms - s_onMs) >= (uint32_t) BRK_MIN_ON_MS)) {
             brk_deactivate();
         }
+    }
+
+    /* ---- 基线跟随 / 安全阀 ----
+     *
+     * ⚠ 这里曾经写成"只在 decel < 阈值一半时跟随"，看起来更聪明，实际是个
+     *   正反馈：dev 一旦超过阈值一半就停止跟随 → dev 继续变大 → 必然触发。
+     *   缓慢上坡（10 s 内倾斜 10°）会把灯点亮并且**再也灭不掉**，仿真里复现了。
+     *
+     * 现在的规则很简单：
+     *   · 没在刹车 → 基线正常跟随（1/256，τ≈5.6 s）：缓坡、慢倾、车身姿态
+     *     变化都被吸收，dev 始终≈0，不会误触发；
+     *   · 在刹车   → 基线**冻结**。这样刹车结束后 mg 立刻回到基线、dev≈0，
+     *     松开就灭，不会有"拖尾"；
+     *   · 连续超过 BRK_MAX_ON_MS → 判定为误触发，强制释放并重同步基线。 */
+    if (s_active == 0u) {
+        int32_t baseMg;
+
+        s_baseQ8 += ((mg << 8) - s_baseQ8) >> BRK_BASE_SHIFT;
+        baseMg    = s_baseQ8 >> 8;
+        dbg.brake.base_mg = (int16_t) ((baseMg > 32767) ? 32767
+                                       : ((baseMg < -32768) ? -32768 : baseMg));
+    } else if ((uint32_t) (in->now_ms - s_onMs) >= (uint32_t) BRK_MAX_ON_MS) {
+        brk_deactivate();
+        s_baseQ8   = mg << 8;           /* 重同步：把这次"刹车"当成新的静止态 */
+        s_baseInit = 1u;
+        dbg.brake.base_mg = (int16_t) mg;
+        return;
     }
 
     if (s_active != 0u) {
@@ -360,13 +426,14 @@ uint8_t Brake_SetThreshold(uint16_t mg)
 
 void Brake_SetAxis(uint8_t axis)
 {
-    s_axis = (axis != 0u) ? 1u : 0u;
-    s_filtMg = 0;                   /* 换轴后滤波器从头来，避免旧值拖尾 */
+    s_axis = (axis > 2u) ? 2u : axis;
+    s_filtMg   = 0;                 /* 换轴后滤波器和基线都从头来，避免旧值拖尾 */
+    s_baseInit = 0u;
 }
 
 void Brake_SetSign(int8_t sign)
 {
-    s_sign = (sign < 0) ? -1 : +1;
+    s_sign   = (sign < 0) ? -1 : +1;
     s_filtMg = 0;
 }
 

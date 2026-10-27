@@ -70,7 +70,7 @@ static uint16_t frame_build(void)
     uint8_t sent = 0u;
     uint8_t ch;
 
-    for (ch = 0u; ch < 14u; ch++) {
+    for (ch = 0u; ch < 16u; ch++) {
         int32_t v;
 
         if ((s_mask & (uint16_t) (1u << ch)) == 0u) {
@@ -96,7 +96,10 @@ static uint16_t frame_build(void)
             case VOFA_CH_RAWX:     v = (int32_t) dbg.brake.rawx_mg;      break;
             case VOFA_CH_RAWY:     v = (int32_t) dbg.brake.rawy_mg;      break;
             /* 减速度：正 = 正在减速。阈值就是拿它比的 */
-            default:               v = (int32_t) dbg.brake.val_mg;       break;
+            case VOFA_CH_DECEL:    v = (int32_t) dbg.brake.val_mg;       break;
+            /* 法线轴原始值 + 基线：标定默认轴就看这两路 */
+            case VOFA_CH_RAWZ:     v = (int32_t) dbg.brake.rawz_mg;      break;
+            default:               v = (int32_t) dbg.brake.base_mg;      break;
         }
 
         if (sent != 0u) {
@@ -156,7 +159,7 @@ void VOFA_SetDivShift(uint32_t n)
 
 void VOFA_SetMask(uint32_t mask)
 {
-    s_mask = (uint16_t) (mask & 0x3FFFu);
+    s_mask = (uint16_t) (mask & 0xFFFFu);
 
     dbg.uart.mask = s_mask;
 }

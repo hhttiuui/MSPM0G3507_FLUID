@@ -335,9 +335,11 @@ static void App_ReadGravity(app_in_t *in)
     }
 
     /* 未滤波的原始值（**不加死区、不滤波**）：刹车检测要自己做 90 ms 低通，
-     * 喂它双通路滤波后的值会把刹车的"持续性"糊掉。见 app.h 的字段说明。 */
+     * 喂它双通路滤波后的值会把刹车的"持续性"糊掉。见 app.h 的字段说明。
+     * AZ 是屏幕法线方向 —— 板子竖装时法线水平，正好是行进方向。 */
     in->ax_raw  = App_MgToSim(rawXmg);
     in->ay_raw  = App_MgToSim(rawYmg);
+    in->az_raw  = App_MgToSim(App_PickAxis(2u, +1));
 
     in->ax      = totalX;
     in->ay      = totalY;
@@ -384,6 +386,7 @@ static void App_ReadInput(app_in_t *in)
          * 换一次方向会把刹车灯点得乱七八糟。 */
         in->ax_raw  = 0;
         in->ay_raw  = 0;
+        in->az_raw  = 0;
         in->shx     = 0;
         in->shy     = 0;
     }
@@ -882,7 +885,7 @@ void App_CmdTask(void)
             break;
 
         case DBG_CMD_BRAKE_AXIS:
-            if ((arg[0] < 0) || (arg[0] > 1)) {
+            if ((arg[0] < 0) || (arg[0] > 2)) {
                 dbg.cmd.result = 2u;
             } else {
                 Brake_SetAxis((uint8_t) arg[0]);
