@@ -22,7 +22,7 @@
 #define VOFA_STUCK_FRAMES   (8u)
 
 static char     s_frame[VOFA_FRAME_MAX];
-static uint16_t s_mask;
+static uint32_t s_mask;
 static uint8_t  s_div_shift;
 static uint8_t  s_div_cnt;
 static uint8_t  s_busy;
@@ -70,10 +70,10 @@ static uint16_t frame_build(void)
     uint8_t sent = 0u;
     uint8_t ch;
 
-    for (ch = 0u; ch < 16u; ch++) {
+    for (ch = 0u; ch < 17u; ch++) {
         int32_t v;
 
-        if ((s_mask & (uint16_t) (1u << ch)) == 0u) {
+        if ((s_mask & (1ul << ch)) == 0ul) {
             continue;
         }
 
@@ -99,7 +99,9 @@ static uint16_t frame_build(void)
             case VOFA_CH_DECEL:    v = (int32_t) dbg.brake.val_mg;       break;
             /* 法线轴原始值 + 基线：标定默认轴就看这两路 */
             case VOFA_CH_RAWZ:     v = (int32_t) dbg.brake.rawz_mg;      break;
-            default:               v = (int32_t) dbg.brake.base_mg;      break;
+            case VOFA_CH_BASE:     v = (int32_t) dbg.brake.base_mg;      break;
+            /* 变化率：用来验证"对 AZ 微分"到底能不能区分刹车和转动 */
+            default:               v = (int32_t) dbg.brake.dmg_mgps;     break;
         }
 
         if (sent != 0u) {
@@ -159,7 +161,7 @@ void VOFA_SetDivShift(uint32_t n)
 
 void VOFA_SetMask(uint32_t mask)
 {
-    s_mask = (uint16_t) (mask & 0xFFFFu);
+    s_mask = (uint32_t) (mask & 0x1FFFFul);
 
     dbg.uart.mask = s_mask;
 }

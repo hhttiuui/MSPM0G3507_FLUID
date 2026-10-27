@@ -297,6 +297,9 @@ typedef struct {
     uint8_t  disp;      /* 刹车时显示哪种画面（BRAKE_DISP_*）*/
     uint8_t  forced;    /* 1 = 强制刹车态（brkf，演示 / 拍摄用）*/
     uint8_t  rotating;  /* 1 = 检测到板子正在被转动（陀螺门控生效中）*/
+    int16_t  dmg_mgps;  /* 轴读数的变化率 mg/s（**只观测**，不参与判定）
+                         * 拿它对比"刹车"和"转动"：转动反而更大，
+                         * 所以不能用微分来区分两者。*/
     int16_t  val_mg;    /* 沿行进方向的**减速度**（mg，正 = 正在减速）*/
     int16_t  rawx_mg;   /* 屏幕 x 轴原始加速度（未滤波，mg）← 标定用 */
     int16_t  rawy_mg;   /* 屏幕 y 轴原始加速度（未滤波，mg）← 标定用 */

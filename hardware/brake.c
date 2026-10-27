@@ -79,6 +79,9 @@ static uint8_t  s_axis = 2u;        /* 0 = 屏幕 x，1 = 屏幕 y，2 = 屏幕�
 static int8_t   s_sign = +1;        /* 行进方向对应哪个符号 */
 static int32_t  s_baseQ8;           /* 基线（Q8，单位 1/256 mg）：重力投影 + 倾角 */
 static uint8_t  s_baseInit;         /* 0 = 还没播种 */
+static int32_t  s_prevMg;           /* 上一帧的轴读数（算变化率用）*/
+static uint8_t  s_prevValid;
+static int32_t  s_dmg;              /* 轴读数变化率（mg/s，已平滑）*/
 static uint8_t  s_rotHold;          /* 1 = 正在被转动，检测挂起 */
 static uint32_t s_rotMs;            /* 本轮转动已持续多久 */
 static uint16_t s_thrMg = BRK_THR_DEF_MG;
@@ -234,6 +237,9 @@ void Brake_Init(void)
     s_sign      = +1;
     s_baseQ8    = 0;
     s_baseInit  = 0u;
+    s_prevMg    = 0;
+    s_prevValid = 0u;
+    s_dmg       = 0;
     s_rotHold   = 0u;
     s_rotMs     = 0u;
     s_thrMg     = BRK_THR_DEF_MG;
@@ -258,6 +264,7 @@ void Brake_Init(void)
     dbg.brake.rawz_mg = 0;
     dbg.brake.base_mg  = 0;
     dbg.brake.rotating = 0u;
+    dbg.brake.dmg_mgps = 0;
     dbg.brake.thr_mg  = s_thrMg;
     dbg.brake.count   = 0u;
 }
@@ -303,6 +310,22 @@ void Brake_Tick(const app_in_t *in)
         s_baseQ8   = mg << 8;
         s_baseInit = 1u;
     }
+
+    /* ---- 观测：轴读数的**变化率**（mg/s）----
+     * 只给标定 / 验证用，**不参与判定**。
+     * 用途：拿它对比"真刹车"和"转动板子"哪个变化率更大 ——
+     * 结论是转动更大（实测：转动 800mg/0.3s ≈ 2700 mg/s，
+     * 刹车 300mg/0.2s ≈ 1500 mg/s），所以"对 AZ 微分"不能区分两者，
+     * 反而让转动更容易被误判成刹车。 */
+    if (s_prevValid != 0u) {
+        int32_t d = (int32_t) (((int64_t) (mg - s_prevMg) * 1000) / (int64_t) dt);
+
+        s_dmg += (d - s_dmg) >> 3;      /* 平滑，τ ≈ 8 帧 ≈ 175 ms */
+        dbg.brake.dmg_mgps = (int16_t) ((s_dmg > 32767) ? 32767
+                                        : ((s_dmg < -32768) ? -32768 : s_dmg));
+    }
+    s_prevMg    = mg;
+    s_prevValid = 1u;
 
     dev = mg - (s_baseQ8 >> 8);
 
