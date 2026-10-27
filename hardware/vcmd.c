@@ -363,6 +363,9 @@ static const vcmd_alias_t s_alias[] = {
     { "brkax",   DBG_CMD_BRAKE_AXIS,   0 },  /* brkax 0        0=屏幕 x / 1=屏幕 y */
     { "brksgn",  DBG_CMD_BRAKE_SIGN,   0 },  /* brksgn -1      行进方向对应哪个符号 */
     { "brkdisp", DBG_CMD_BRAKE_DISP,   0 },  /* brkdisp 0      0 全亮 / 1 下半条 */
+    { "brkmode", DBG_CMD_BRAKE_MODE,   0 },  /* brkmode 1      0 幅值(默认) / 1 变化率边沿 */
+    { "brkdthr", DBG_CMD_BRAKE_DTHR,   0 },  /* brkdthr 1000   变化率阈值 mg/s */
+    { "brkhold", DBG_CMD_BRAKE_HOLD,   0 },  /* brkhold 1200   边沿触发后保持 ms */
 };
 
 #define VCMD_ALIAS_N  (sizeof(s_alias) / sizeof(s_alias[0]))

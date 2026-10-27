@@ -906,6 +906,24 @@ void App_CmdTask(void)
             }
             break;
 
+        case DBG_CMD_BRAKE_MODE:
+            if (Brake_SetMode((uint8_t) arg[0]) == 0u) {
+                dbg.cmd.result = 2u;        /* 0 幅值 / 1 变化率 */
+            }
+            break;
+
+        case DBG_CMD_BRAKE_DTHR:
+            if (Brake_SetDThr((uint16_t) arg[0]) == 0u) {
+                dbg.cmd.result = 2u;        /* 200~20000 mg/s */
+            }
+            break;
+
+        case DBG_CMD_BRAKE_HOLD:
+            if (Brake_SetHoldMs((uint16_t) arg[0]) == 0u) {
+                dbg.cmd.result = 2u;        /* 200~5000 ms */
+            }
+            break;
+
         /* ---------------- 场景切换 ---------------- */
         case DBG_CMD_APP_MODE:
             App_Goto((uint8_t) arg[0]);

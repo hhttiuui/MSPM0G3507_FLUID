@@ -140,6 +140,9 @@ uint8_t Brake_SetThreshold(uint16_t mg);    /* brkthr     触发阈值，30~800 
 void    Brake_SetAxis(uint8_t axis);        /* brkax 0/1/2  0=x 1=y 2=法线(AZ，默认) */
 void    Brake_SetSign(int8_t sign);         /* brksgn ±1  方向 */
 uint8_t Brake_SetDisplay(uint8_t id);       /* brkdisp    0 全亮 / 1 下半条 */
+uint8_t Brake_SetMode(uint8_t mode);        /* brkmode    0 幅值(默认) / 1 变化率边沿 */
+uint8_t Brake_SetDThr(uint16_t mgps);       /* brkdthr    变化率阈值 mg/s（200~20000）*/
+uint8_t Brake_SetHoldMs(uint16_t ms);       /* brkhold    边沿触发后保持 ms（200~5000）*/
 void    Brake_SetDisplayHook(brake_draw_fn fn);
 
 #endif /* __BRAKE_H */

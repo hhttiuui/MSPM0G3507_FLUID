@@ -297,9 +297,10 @@ typedef struct {
     uint8_t  disp;      /* 刹车时显示哪种画面（BRAKE_DISP_*）*/
     uint8_t  forced;    /* 1 = 强制刹车态（brkf，演示 / 拍摄用）*/
     uint8_t  rotating;  /* 1 = 检测到板子正在被转动（陀螺门控生效中）*/
-    int16_t  dmg_mgps;  /* 轴读数的变化率 mg/s（**只观测**，不参与判定）
-                         * 拿它对比"刹车"和"转动"：转动反而更大，
-                         * 所以不能用微分来区分两者。*/
+    int16_t  dmg_mgps;  /* 轴读数的变化率 mg/s（模式 1 用它判定，模式 0 只观测）*/
+    uint8_t  mode;      /* 0 = 幅值（默认）/ 1 = 变化率边沿 */
+    uint16_t dthr;      /* 模式 1 的变化率阈值 mg/s */
+    uint16_t hold_ms;   /* 模式 1 的保持时间 ms */
     int16_t  val_mg;    /* 沿行进方向的**减速度**（mg，正 = 正在减速）*/
     int16_t  rawx_mg;   /* 屏幕 x 轴原始加速度（未滤波，mg）← 标定用 */
     int16_t  rawy_mg;   /* 屏幕 y 轴原始加速度（未滤波，mg）← 标定用 */
@@ -406,6 +407,9 @@ typedef struct {
 #define DBG_CMD_BRAKE_AXIS          0x0603u  /* brkax <0|1>     0=屏幕x 1=屏幕y */
 #define DBG_CMD_BRAKE_SIGN          0x0604u  /* brksgn <+1|-1>  行进方向符号 */
 #define DBG_CMD_BRAKE_DISP          0x0605u  /* brkdisp <0|1>   刹车时显示哪种画面 */
+#define DBG_CMD_BRAKE_MODE          0x0606u  /* brkmode <0|1>   0 幅值(默认) / 1 变化率边沿 */
+#define DBG_CMD_BRAKE_DTHR          0x0607u  /* brkdthr <mg/s>  模式 1 的变化率阈值 */
+#define DBG_CMD_BRAKE_HOLD          0x0608u  /* brkhold <ms>    模式 1 的保持时间 */
 
 /* 场景框架的观测量。切没切成功、切了几次，看这里最直接。 */
 typedef struct {

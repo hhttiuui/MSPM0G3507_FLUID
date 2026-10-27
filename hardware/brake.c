@@ -62,6 +62,24 @@
 #define BRK_ROT_GATE_MDPS   (70000)     /* 70 °/s */
 #define BRK_ROT_HOLD_MS     (150u)
 
+/* ---- 模式 1：变化率（边沿）触发 ----
+ *
+ * 只在**减速边沿**点亮，然后保持 brkhold 毫秒。响应比幅值模式快
+ * （实测手推急停的边沿只持续 65~110 ms，幅值模式要等 180 ms 确认）。
+ *
+ * ⚠ 两个已知风险，上路面验证过再决定要不要当默认：
+ *   ① 真实刹车（0.2~0.3 g / 0.2 s）的变化率只有 1000~1500 mg/s，
+ *      比手推急停（5000~7000）小得多，阈值必须设得很低才抓得到；
+ *   ② 阈值一低，**路面颠簸**（10 ms 内跳 ±500 mg ≈ 50000 mg/s）就会
+ *      疯狂误触发 —— 幅值模式的 90 ms 低通正是用来挡它的，微分把这层保护拆了。
+ * 所以默认 brkmode 0（幅值），这条只作为可选项。 */
+#define BRK_DTHR_DEF        (1000)      /* mg/s */
+#define BRK_DTHR_MIN        (200)
+#define BRK_DTHR_MAX        (20000)
+#define BRK_HOLD_DEF        (1200u)     /* ms */
+#define BRK_HOLD_MIN        (200u)
+#define BRK_HOLD_MAX        (5000u)
+
 /* 刹车画面重推间隔。流体场景一帧 21 ms，这个值必须比它小，
  * 否则会漏掉场景的重绘、出现"闪回液体一帧"。 */
 #define BRK_REDRAW_MS       (15u)
@@ -87,6 +105,10 @@ static uint32_t s_rotMs;            /* 本轮转动已持续多久 */
 static uint16_t s_thrMg = BRK_THR_DEF_MG;
 static uint16_t s_relMg = BRK_REL_DEF_MG;
 static uint8_t  s_disp  = BRAKE_DISP_SOLID;
+static uint8_t  s_mode;             /* 0 = 幅值（默认）/ 1 = 变化率边沿 */
+static uint16_t s_dthr  = BRK_DTHR_DEF;   /* 变化率阈值 mg/s（模式 1）*/
+static uint16_t s_holdMs = BRK_HOLD_DEF;  /* 边沿触发后的保持时间 */
+static uint32_t s_holdUntil;        /* 保持到什么时候 */
 
 static int32_t  s_filtMg;           /* 低通后的轴加速度（mg，带符号）*/
 static uint32_t s_aboveMs;          /* 连续超阈值的时长 */
@@ -245,6 +267,10 @@ void Brake_Init(void)
     s_thrMg     = BRK_THR_DEF_MG;
     s_relMg     = BRK_REL_DEF_MG;
     s_disp      = BRAKE_DISP_SOLID;
+    s_mode      = 0u;
+    s_dthr      = BRK_DTHR_DEF;
+    s_holdMs    = BRK_HOLD_DEF;
+    s_holdUntil = 0u;
     s_filtMg    = 0;
     s_aboveMs   = 0u;
     s_belowMs   = 0u;
@@ -265,6 +291,9 @@ void Brake_Init(void)
     dbg.brake.base_mg  = 0;
     dbg.brake.rotating = 0u;
     dbg.brake.dmg_mgps = 0;
+    dbg.brake.mode     = 0u;
+    dbg.brake.dthr     = BRK_DTHR_DEF;
+    dbg.brake.hold_ms  = BRK_HOLD_DEF;
     dbg.brake.thr_mg  = s_thrMg;
     dbg.brake.count   = 0u;
 }
@@ -401,6 +430,41 @@ void Brake_Tick(const app_in_t *in)
         }
     }
 
+    /* ---- 模式 1：变化率（边沿）触发 + 保持 ----
+     * 只看"减速方向的变化率"，越过阈值就点亮并续一次保持计时。
+     * 基线在这里仍然跟着走，这样随时切回模式 0 不会跳变。 */
+    if (s_mode == 1u) {
+        int32_t edge = (s_sign > 0) ? -s_dmg : s_dmg;
+
+        if (edge >= (int32_t) s_dthr) {
+            s_holdUntil = in->now_ms + (uint32_t) s_holdMs;
+
+            if (s_active == 0u) {
+                s_onMs = in->now_ms;
+                brk_activate();
+            }
+        }
+
+        if ((s_active != 0u) &&
+            ((int32_t) (in->now_ms - s_holdUntil) >= 0)) {
+            brk_deactivate();
+        }
+
+        if (s_active == 0u) {
+            int32_t baseMg;
+
+            s_baseQ8 += ((mg << 8) - s_baseQ8) >> BRK_BASE_SHIFT;
+            baseMg    = s_baseQ8 >> 8;
+            dbg.brake.base_mg = (int16_t) ((baseMg > 32767) ? 32767
+                                           : ((baseMg < -32768) ? -32768 : baseMg));
+        }
+
+        if (s_active != 0u) {
+            brk_hold();
+        }
+        return;
+    }
+
     /* ---- 滞回计时（**有符号**：只看减速方向）----
      * decel ≥ thr        → 正在刹车
      * decel ≤ rel(60mg)  → 没在刹车（含"正在加速"，decel 为负）
@@ -534,6 +598,43 @@ uint8_t Brake_SetDisplay(uint8_t id)
     if (s_active != 0u) {
         s_lastDrawMs = (uint32_t) (tick_ms - (uint32_t) BRK_REDRAW_MS);
     }
+    return 1u;
+}
+
+uint8_t Brake_SetMode(uint8_t mode)
+{
+    if (mode > 1u) {
+        return 0u;
+    }
+
+    s_mode = mode;
+    dbg.brake.mode = s_mode;
+
+    /* 切模式时先退出来，避免把上个模式的中间状态带过去 */
+    s_aboveMs = 0u;
+    s_belowMs = 0u;
+    s_holdUntil = 0u;
+    brk_deactivate();
+    return 1u;
+}
+
+uint8_t Brake_SetDThr(uint16_t mgps)
+{
+    if ((mgps < (uint16_t) BRK_DTHR_MIN) || (mgps > (uint16_t) BRK_DTHR_MAX)) {
+        return 0u;
+    }
+    s_dthr = mgps;
+    dbg.brake.dthr = s_dthr;
+    return 1u;
+}
+
+uint8_t Brake_SetHoldMs(uint16_t ms)
+{
+    if ((ms < (uint16_t) BRK_HOLD_MIN) || (ms > (uint16_t) BRK_HOLD_MAX)) {
+        return 0u;
+    }
+    s_holdMs = ms;
+    dbg.brake.hold_ms = s_holdMs;
     return 1u;
 }
 
