@@ -70,7 +70,7 @@ static uint16_t frame_build(void)
     uint8_t sent = 0u;
     uint8_t ch;
 
-    for (ch = 0u; ch < 10u; ch++) {
+    for (ch = 0u; ch < 11u; ch++) {
         int32_t v;
 
         if ((s_mask & (uint16_t) (1u << ch)) == 0u) {
@@ -89,7 +89,9 @@ static uint16_t frame_build(void)
             /* 场景号：切换后这一路立刻变，是"按键到底有没有生效"最直接的证据 */
             case VOFA_CH_SCENE:    v = (int32_t) dbg.app.scene;          break;
             /* 旋转方向：确认自动判定到底转没转、转对没转 */
-            default:               v = (int32_t) dbg.app.rot;            break;
+            case VOFA_CH_ROT:      v = (int32_t) dbg.app.rot;            break;
+            /* 刹车高亮：标定时看它跟不跟 val_mg 走 */
+            default:               v = (int32_t) dbg.brake.active;       break;
         }
 
         if (sent != 0u) {
@@ -149,7 +151,7 @@ void VOFA_SetDivShift(uint32_t n)
 
 void VOFA_SetMask(uint32_t mask)
 {
-    s_mask = (uint16_t) (mask & 0x03FFu);
+    s_mask = (uint16_t) (mask & 0x07FFu);
 
     dbg.uart.mask = s_mask;
 }

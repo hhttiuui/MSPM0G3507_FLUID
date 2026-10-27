@@ -98,4 +98,17 @@ void LedMatrix_FillAll(uint8_t on);
 /* 把整帧推给芯片：0xFD 选页 + 0x80 写 32 字节（一帧原子更新，不会半屏新半屏旧）*/
 void LedMatrix_Flush(void);
 
+/* ==================== 整帧快照 / 还原 ====================
+ *
+ * 给"临时接管显示、结束后原样还回去"的模块用（目前只有刹车高亮 brake.c）。
+ *
+ * 为什么需要：DDRAM 是**持久**的，而静态图 / 文字定格 / 动图这些场景
+ * 不会每帧重绘 —— 别人覆盖了画面，它们也不会自己修回来。所以覆盖方
+ * 必须先把整帧存下来，退出时写回。
+ *
+ * 缓冲区大小 = HT16D33A_RAM_BYTES（灰度 256 B / 二值 32 B）。
+ * ⚠ Restore 只写本地帧缓冲，要显示得自己再调 LedMatrix_Flush()。 */
+void LedMatrix_Snapshot(uint8_t *dst);
+void LedMatrix_Restore(const uint8_t *src);
+
 #endif /* __LED_MATRIX_H */

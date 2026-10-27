@@ -278,6 +278,23 @@ typedef struct {
     uint8_t  shutdown;  /* 1 = 已触发低电关机 */
 } dbg_bat_t;
 
+/* ---- 刹车高亮（实现见 hardware/brake.c）----
+ *
+ * 判读：
+ *   val_mg 静止时应在 ±30 mg 内漂   → 超出说明轴选错（brkax）或噪声大
+ *   val_mg 刹车时方向反了           → brksgn 翻符号
+ *   count 一直涨但没刹车            → 阈值太低（brkthr 加）或轴选错
+ *   active 不跟随 val_mg            → 检查 enabled / imu_use */
+typedef struct {
+    uint8_t  active;    /* 1 = 正在刹车高亮（显示权被接管）*/
+    uint8_t  enabled;   /* 1 = 检测开启（brk 0 可关）*/
+    uint8_t  disp;      /* 刹车时显示哪种画面（BRAKE_DISP_*）*/
+    uint8_t  forced;    /* 1 = 强制刹车态（brkf，演示 / 拍摄用）*/
+    int16_t  val_mg;    /* 滤波后的轴加速度（mg，带符号）*/
+    uint16_t thr_mg;    /* 当前触发阈值（mg）*/
+    uint16_t count;     /* 累计触发次数 */
+} dbg_brake_t;
+
 /* ---- 串口调试通道（实现见 hardware/vcmd.c 与 hardware/vofa.c）----
  * 下行：UART1 RX → DMA_CH0 → s_rx[64] → 文本命令 → dbg.cmd 邮箱
  * 上行：dbg → FireWater 文本帧 → DMA_CH1 → UART1 TX
@@ -368,6 +385,14 @@ typedef struct {
 #define DBG_CMD_GEOM_KICK           0x0503u  /* gkick <1-8>    碰边后固定的弹起速度（px/帧）*/
 #define DBG_CMD_GEOM_DAMP           0x0504u  /* gdamp <0-8>    水平阻尼：0 = 关，越大衰减越快 */
 
+/* ---- 刹车高亮（brake.c）---- */
+#define DBG_CMD_BRAKE_ENABLE        0x0600u  /* brk <0|1>       检测开关 */
+#define DBG_CMD_BRAKE_FORCE         0x0601u  /* brkf <0|1>      强制刹车态（演示）*/
+#define DBG_CMD_BRAKE_THR           0x0602u  /* brkthr <30-800> 触发阈值 mg */
+#define DBG_CMD_BRAKE_AXIS          0x0603u  /* brkax <0|1>     0=屏幕x 1=屏幕y */
+#define DBG_CMD_BRAKE_SIGN          0x0604u  /* brksgn <+1|-1>  行进方向符号 */
+#define DBG_CMD_BRAKE_DISP          0x0605u  /* brkdisp <0|1>   刹车时显示哪种画面 */
+
 /* 场景框架的观测量。切没切成功、切了几次，看这里最直接。 */
 typedef struct {
     uint8_t scene;          /* 当前场景号 */
@@ -390,6 +415,7 @@ typedef struct {
     dbg_led_t   led;
     dbg_fluid_t fluid;
     dbg_bat_t   bat;
+    dbg_brake_t brake;
     dbg_flash_t flash;
     dbg_uart_t  uart;
     dbg_cmd_t   cmd;

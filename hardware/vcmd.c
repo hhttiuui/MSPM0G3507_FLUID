@@ -355,6 +355,14 @@ static const vcmd_alias_t s_alias[] = {
     { "gball",  DBG_CMD_GEOM_BALL,  0 },  /* gball 3       球半径 1~6 像素 */
     { "gkick",  DBG_CMD_GEOM_KICK,  0 },  /* gkick 3       碰边弹起速度 1~8 px/帧 */
     { "gdamp",  DBG_CMD_GEOM_DAMP,  0 },  /* gdamp 2       水平阻尼 0~8，0 = 关 */
+
+    /* ---- 刹车高亮（brake.c）---- */
+    { "brk",     DBG_CMD_BRAKE_ENABLE, 0 },  /* brk 1          刹车检测开关 */
+    { "brkf",    DBG_CMD_BRAKE_FORCE,  0 },  /* brkf 1         强制刹车态（演示/拍摄）*/
+    { "brkthr",  DBG_CMD_BRAKE_THR,    0 },  /* brkthr 150     触发阈值 mg（30~800）*/
+    { "brkax",   DBG_CMD_BRAKE_AXIS,   0 },  /* brkax 0        0=屏幕 x / 1=屏幕 y */
+    { "brksgn",  DBG_CMD_BRAKE_SIGN,   0 },  /* brksgn -1      行进方向对应哪个符号 */
+    { "brkdisp", DBG_CMD_BRAKE_DISP,   0 },  /* brkdisp 0      0 全亮 / 1 下半条 */
 };
 
 #define VCMD_ALIAS_N  (sizeof(s_alias) / sizeof(s_alias[0]))

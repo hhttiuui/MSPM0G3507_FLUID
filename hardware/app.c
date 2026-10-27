@@ -60,6 +60,7 @@
 #include "glyph_store.h"
 #include "flash_store.h"
 #include "asset_route.h"
+#include "brake.h"              /* 刹车高亮：检测 + 接管显示 */
 
 /* ==================== 配置 ==================== */
 
@@ -333,6 +334,11 @@ static void App_ReadGravity(app_in_t *in)
         totalY = -APP_ACC_CLAMP;
     }
 
+    /* 未滤波的原始值（**不加死区、不滤波**）：刹车检测要自己做 90 ms 低通，
+     * 喂它双通路滤波后的值会把刹车的"持续性"糊掉。见 app.h 的字段说明。 */
+    in->ax_raw  = App_MgToSim(rawXmg);
+    in->ay_raw  = App_MgToSim(rawYmg);
+
     in->ax      = totalX;
     in->ay      = totalY;
     in->ax_slow = s_axSlow;
@@ -372,6 +378,12 @@ static void App_ReadInput(app_in_t *in)
         in->ay      = s_tiltAcc[s_tilt][1];
         in->ax_slow = in->ax;
         in->ay_slow = in->ay;
+
+        /* 没有 IMU 就没有真实的加速度：raw 清零，刹车检测会自动退出
+         * （brake.c 里判 imu_use）。不能让假重力顶上来，否则每 2 s
+         * 换一次方向会把刹车灯点得乱七八糟。 */
+        in->ax_raw  = 0;
+        in->ay_raw  = 0;
         in->shx     = 0;
         in->shy     = 0;
     }
@@ -473,6 +485,10 @@ void App_Goto(uint8_t id)
 
     dbg.app.scene = s_cur;
     dbg.app.switches++;
+
+    /* 刹车期间切了场景：新场景的 enter() 已经画好了，
+     * 让刹车层重新快照，退出时才不会还原成旧场景的画面。 */
+    Brake_NotifySceneChanged();
 }
 
 void App_Step(int8_t d)
@@ -850,6 +866,43 @@ void App_CmdTask(void)
             }
             break;
 
+        /* ---------------- 刹车高亮 ---------------- */
+        case DBG_CMD_BRAKE_ENABLE:
+            Brake_SetEnabled((arg[0] != 0) ? 1u : 0u);
+            break;
+
+        case DBG_CMD_BRAKE_FORCE:
+            Brake_SetForced((arg[0] != 0) ? 1u : 0u);
+            break;
+
+        case DBG_CMD_BRAKE_THR:
+            if (Brake_SetThreshold((uint16_t) arg[0]) == 0u) {
+                dbg.cmd.result = 2u;        /* 30~800 mg */
+            }
+            break;
+
+        case DBG_CMD_BRAKE_AXIS:
+            if ((arg[0] < 0) || (arg[0] > 1)) {
+                dbg.cmd.result = 2u;
+            } else {
+                Brake_SetAxis((uint8_t) arg[0]);
+            }
+            break;
+
+        case DBG_CMD_BRAKE_SIGN:
+            if ((arg[0] != 1) && (arg[0] != -1)) {
+                dbg.cmd.result = 2u;
+            } else {
+                Brake_SetSign((int8_t) arg[0]);
+            }
+            break;
+
+        case DBG_CMD_BRAKE_DISP:
+            if (Brake_SetDisplay((uint8_t) arg[0]) == 0u) {
+                dbg.cmd.result = 2u;        /* 0 全亮 / 1 下半条 */
+            }
+            break;
+
         /* ---------------- 场景切换 ---------------- */
         case DBG_CMD_APP_MODE:
             App_Goto((uint8_t) arg[0]);
@@ -967,6 +1020,11 @@ void App_Tick(void)
     if (s_scenes[s_cur].tick != 0) {
         s_scenes[s_cur].tick(&in);
     }
+
+    /* ---- 刹车高亮：**必须在场景 tick 之后** ----
+     * 场景每帧都会重画 DDRAM，刹车画面放在前面会被直接盖掉。
+     * 这条顺序是刹车能不能看见的唯一条件，别调换。 */
+    Brake_Tick(&in);
 }
 
 /* ==================== 初始化 + 主循环 ==================== */
@@ -1031,6 +1089,10 @@ static void App_Init(void)
     s_sxFast     = 0;
     s_syFast     = 0;
     s_filtSeeded = 0u;
+
+    /* 刹车高亮：状态清零 + 同步 dbg。放在 IMU 之后 ——
+     * 它要看 dbg.fluid.imu_use 决定是否参与检测。 */
+    Brake_Init();
 
     dbg.fluid.tilt = s_tilt;
     s_tiltStart = tick_ms;

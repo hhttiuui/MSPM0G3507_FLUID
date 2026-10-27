@@ -244,6 +244,32 @@ void LedMatrix_Flush(void)
     HT16D33A_WriteRam(0x00u, s_frame, (uint16_t) HT16D33A_RAM_BYTES);
 }
 
+/* 整帧快照 / 还原，见 led_matrix.h。直接按 DDRAM 顺序拷，不做映射 ——
+ * 存的就是"屏幕现在长这样"，还原时逐字节写回即可。 */
+void LedMatrix_Snapshot(uint8_t *dst)
+{
+    uint16_t i;
+
+    if (dst == 0) {
+        return;
+    }
+    for (i = 0u; i < (uint16_t) HT16D33A_RAM_BYTES; i++) {
+        dst[i] = s_frame[i];
+    }
+}
+
+void LedMatrix_Restore(const uint8_t *src)
+{
+    uint16_t i;
+
+    if (src == 0) {
+        return;
+    }
+    for (i = 0u; i < (uint16_t) HT16D33A_RAM_BYTES; i++) {
+        s_frame[i] = src[i];
+    }
+}
+
 void LedMatrix_Init(void)
 {
     (void) HT16D33A_Init();         /* 选页 → 复位 → 模式 → 电流/亮度 → OSC → 清屏 → 使能全 1 → 开显示 */
