@@ -1031,7 +1031,8 @@ PB12 PB13 PB21 PB22 PB23 PB25 PB26 PB27
   设计背景见 [串口与画面功能设计.md](串口与画面功能设计.md)。
 - **自定义画面已实现**（`scene_frame.c` + `flash_store.c`）：上位机上传、Flash 分槽、按帧播放；
   方案见 [自定义画面方案.md](自定义画面方案.md)。
-- **协作流程**见 [GIT_WORKFLOW.md](GIT_WORKFLOW.md)（分支模型 / rebase / 撤销速查）。
+- **协作流程**见 [GIT_WORKFLOW.md](GIT_WORKFLOW.md)（分支模型 / rebase / 撤销速查）；
+  **每天怎么开工收工、`dev` 怎么合进 `main`** 见 [GIT_DAILY_WORKFLOW.md](GIT_DAILY_WORKFLOW.md)。
 - 推屏 1.2 ms 期间 CPU 空转（SPI 轮询）。改 DMA 能省下来，但只占一帧的 5.6%，
   **收益已经不大** —— 优先级低于上面的串口 / 画面。
 - 每帧都推全部 256 字节。改成**只推变化的 burst** 能省一部分，液体静止时几乎全免。
