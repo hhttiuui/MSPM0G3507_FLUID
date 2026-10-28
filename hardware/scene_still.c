@@ -204,6 +204,7 @@ uint8_t StillScene_Cmd(uint16_t id, const int32_t *arg)
  *   0 弹跳球     **吃 IMU 重力**（倾斜板子，球就往低处滚）+ 可调半径
  *   1 旋转立方体 3D→2D 投影 + 超采样抗锯齿的 12 条棱
  *   2 扩散环     直接在 15×16 上按距离场算，不走超采样
+ *   3 心跳       心形位图表 + 25 帧节奏，60 bpm
  *
  * ==================== 怎么加一个新动画 ====================
  *   ① 写一个 `static void anim_xxx_frame(const app_in_t *in)`，
@@ -679,6 +680,136 @@ static void geo_cube(void)
     }
 }
 
+/* ==================== 3：心跳 ====================
+ *
+ * 心形用隐式方程 (x²+y²−1)³ − x²y³ ≤ 0 离线算好，烧成两张行掩码表
+ * （大心 13×13、小心 9×9，每行一个 bit 表示一列）。运行时只做位测试 +
+ * h_dot，**不做任何曲线求值** —— M0+ 上解六次方程要 30+ 次乘法/像素，不值得。
+ *
+ * 节奏：25 帧 = 1 s（GEO_FPS_MS = 40 → 60 bpm）。
+ *   前 GEO_HEART_BEAT 帧是"咚-咚"（大心扩张 → 小心收缩，亮度逐帧衰减），
+ *   之后进入静息。改节奏只改 s_heart[] 这张表，不用碰绘制代码。
+ *
+ * ⚠ 这里主动 geo_clear() 掉拖尾缓冲：尺寸切换必须干脆，
+ *   否则大心的残影会糊住小心，看起来是一团光斑而不是心跳。
+ *   代价是 `gtail` 对心跳无效 —— 这是有意的。
+ */
+
+#define GEO_HEART_BIG_W    (13u)
+#define GEO_HEART_BIG_H    (13u)
+#define GEO_HEART_SMALL_W  (9u)
+#define GEO_HEART_SMALL_H  (9u)
+#define GEO_HEART_BEAT     (10u)   /* 搏动占前 10 帧（400 ms）*/
+#define GEO_HEART_REST     (28u)   /* 静息亮度 */
+#define GEO_HEART_FRAMES   (25u)   /* 整周期 1 s */
+
+/* 大心 13×13：bit0 = 最左列 */
+static const uint16_t s_heartBig[GEO_HEART_BIG_H] = {
+    0x07BCu,   /* ..####.####.. */
+    0x0FFEu,   /* .###########. */
+    0x1FFFu,   /* ############# */
+    0x1FFFu,   /* ############# */
+    0x1FFFu,   /* ############# */
+    0x1FFFu,   /* ############# */
+    0x1FFFu,   /* ############# */
+    0x0FFEu,   /* .###########. */
+    0x07FCu,   /* ..#########.. */
+    0x07FCu,   /* ..#########.. */
+    0x03F8u,   /* ...#######... */
+    0x00E0u,   /* .....###..... */
+    0x0040u,   /* ......#...... */
+};
+
+/* 小心 9×9 */
+static const uint16_t s_heartSmall[GEO_HEART_SMALL_H] = {
+    0x00EEu,   /* .###.###. */
+    0x01FFu,   /* ######### */
+    0x01FFu,   /* ######### */
+    0x01FFu,   /* ######### */
+    0x01FFu,   /* ######### */
+    0x00FEu,   /* .#######. */
+    0x007Cu,   /* ..#####.. */
+    0x0038u,   /* ...###... */
+    0x0010u,   /* ....#.... */
+};
+
+/* 搏动阶段的 10 帧：big = 1 用大心；lv = 亮度 */
+typedef struct {
+    uint8_t big;
+    uint8_t lv;
+} heart_step_t;
+
+static const heart_step_t s_heart[GEO_HEART_BEAT] = {
+    { 1u, 255u },   /* 0  咚（第一声，重）：扩张到最大，满亮 */
+    { 1u, 240u },   /* 1  余亮 */
+    { 0u, 100u },   /* 2  收缩，压暗 */
+    { 0u,  80u },   /* 3  两拍之间的短间隔 */
+    { 0u,  65u },   /* 4  */
+    { 1u, 215u },   /* 5  咚（第二声，轻）：再扩张，但比第一声暗 */
+    { 1u, 190u },   /* 6  余亮 */
+    { 0u, 130u },   /* 7  收缩后衰减 */
+    { 0u,  75u },   /* 8  */
+    { 0u,  42u },   /* 9  交给静息 */
+};
+
+static uint8_t s_heartF;            /* 周期内的帧号 0..GEO_HEART_FRAMES-1 */
+
+static void geo_reset_heart(void)
+{
+    s_heartF = 0u;
+}
+
+static void anim_heart_frame(const app_in_t *in)
+{
+    const uint16_t *bm;
+    uint8_t w, h, ox, oy, x, y, lv;
+
+    (void) in;                      /* 心跳不吃重力 */
+
+    if (s_heartF < GEO_HEART_BEAT) {
+        lv = s_heart[s_heartF].lv;
+        if (s_heart[s_heartF].big != 0u) {
+            bm = s_heartBig;
+            w  = (uint8_t) GEO_HEART_BIG_W;
+            h  = (uint8_t) GEO_HEART_BIG_H;
+        } else {
+            bm = s_heartSmall;
+            w  = (uint8_t) GEO_HEART_SMALL_W;
+            h  = (uint8_t) GEO_HEART_SMALL_H;
+        }
+    } else {
+        lv = (uint8_t) GEO_HEART_REST;
+        bm = s_heartSmall;
+        w  = (uint8_t) GEO_HEART_SMALL_W;
+        h  = (uint8_t) GEO_HEART_SMALL_H;
+    }
+
+    ox = (uint8_t) ((GEO_W - w) / 2u);
+    oy = (uint8_t) ((GEO_H - h) / 2u);
+
+    geo_clear();                    /* 丢掉拖尾：尺寸切换要干脆 */
+    h_clear();
+
+    for (y = 0u; y < h; y++) {
+        uint16_t m = bm[y];
+
+        for (x = 0u; x < w; x++) {
+            if ((m & (uint16_t) (1u << x)) != 0u) {
+                /* h_dot 画的是 GEO_SUP×GEO_SUP 的方块 = 正好一个输出像素 */
+                h_dot((int16_t) ((ox + x) * GEO_SUP),
+                      (int16_t) ((oy + y) * GEO_SUP), lv);
+            }
+        }
+    }
+
+    geo_compose();
+
+    s_heartF++;
+    if (s_heartF >= (uint8_t) GEO_HEART_FRAMES) {
+        s_heartF = 0u;
+    }
+}
+
 /* ==================== 动画表 ====================
  *
  * 每个 frame 函数**自己负责整条流水线**：
@@ -726,6 +857,7 @@ static const geo_anim_t s_anims[] = {
     { anim_ball_frame, geo_reset_ball },   /* 0 弹跳球（吃 IMU 重力）*/
     { anim_cube_frame, 0              },   /* 1 旋转立方体 */
     { anim_ring_frame, geo_reset_ring },   /* 2 扩散环 */
+    { anim_heart_frame, geo_reset_heart }, /* 3 心跳 */
 };
 
 #define GEO_ANIM_COUNT  ((uint8_t) (sizeof(s_anims) / sizeof(s_anims[0])))
