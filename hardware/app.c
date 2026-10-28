@@ -561,7 +561,9 @@ static uint8_t route_item_count(uint8_t cat)
             return (uint8_t) (1u + FrameScene_SlotCount());
 
         case ROUTE_CAT_GEOM:
-            return 3u;                      /* 球 / 立方体 / 扩散环 */
+            /* 项数 = 动画表 s_anims[] 的长度（scene_still.c）。
+             * 加动画只改那张表，这里不用动 —— 不要再写死数字。 */
+            return GeomScene_AnimCount();
 
         default:
             return 0u;

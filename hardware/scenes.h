@@ -103,16 +103,23 @@ uint8_t FrameScene_StoreEnd(uint16_t crc);
 
 /* ---------------- 4 几何动画（阶段 4）----------------
  *
- * 一张 240 B 灰度缓冲 + 绘制原语 + 每帧衰减（拖尾），三个内置动画：
- *   0 弹跳球 / 1 旋转立方体 / 2 等离子
+ * 一张 240 B 灰度缓冲 + 绘制原语 + 每帧衰减（拖尾），动画由
+ * scene_still.c 末尾的 s_anims[] 表驱动：
+ *   0 弹跳球 / 1 旋转立方体 / 2 扩散环
  * 纯代码、不碰 Flash；实现放在 scene_still.c（本工程不便新增 .c，见该文件注释）。
+ *
+ * **加动画只改 scene_still.c**：写 frame/reset 函数 + 表里加一行即可，
+ * 本头文件和 app.c 都不用动（项数走 GeomScene_AnimCount()）。
  */
 void    GeomScene_Enter(void);
 void    GeomScene_Tick(const app_in_t *in);
 void    GeomScene_Exit(void);
 uint8_t GeomScene_Cmd(uint16_t id, const int32_t *arg);
 
-/* 直接选第 n 个动画（路由切换用），n = 0..2 */
+/* 直接选第 n 个动画（路由切换用），n = 0 .. AnimCount()-1 */
 void    GeomScene_Select(uint8_t n);
+
+/* 动画总数 = s_anims[] 表长。app.c 的 route_item_count() 直接取这个值。 */
+uint8_t GeomScene_AnimCount(void);
 
 #endif /* __SCENES_H */

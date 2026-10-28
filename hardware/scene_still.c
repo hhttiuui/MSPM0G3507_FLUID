@@ -187,7 +187,7 @@ uint8_t StillScene_Cmd(uint16_t id, const int32_t *arg)
 
 /* ==================== 几何动画（阶段 4）====================
  *
- * 一层极小的渲染层 + 两个内置动画（球 / 立方体）。
+ * 一层极小的渲染层 + 一张动画表（见文件末尾的 s_anims[]）。
  *
  * ==================== 为什么要"超采样" ====================
  * 15×16 直接画线只有两种结果：要么 1 px 宽的硬线（斜线全是锯齿），
@@ -200,9 +200,19 @@ uint8_t StillScene_Cmd(uint16_t id, const int32_t *arg)
  *
  * 定点：全部 Q8.8（int16，1.0 = 256）；三角函数查 256 项表（M0+ 没有 FPU）。
  *
- * 两个动画（ganim 0/1）：
+ * 动画（ganim，编号 = s_anims[] 的下标）：
  *   0 弹跳球     **吃 IMU 重力**（倾斜板子，球就往低处滚）+ 可调半径
  *   1 旋转立方体 3D→2D 投影 + 超采样抗锯齿的 12 条棱
+ *   2 扩散环     直接在 15×16 上按距离场算，不走超采样
+ *
+ * ==================== 怎么加一个新动画 ====================
+ *   ① 写一个 `static void anim_xxx_frame(const app_in_t *in)`，
+ *      **自己负责整条流水线**：超采样类先 h_clear()、画完 geo_compose()；
+ *      直接类（像扩散环）就画 s_gbuf。
+ *   ② 有状态要重置就再写个 `static void anim_xxx_reset(void)`，没有填 0。
+ *   ③ 在 s_anims[] 末尾加一行 { anim_xxx_frame, anim_xxx_reset }。
+ * 就这三步。不用改 switch、不用改 app.c —— route_item_count() 直接取
+ * GeomScene_AnimCount()，项数跟着表自动变。
  */
 
 #define GEO_W          ((uint8_t) LED_APP_COLS)          /* 15 */
@@ -669,16 +679,69 @@ static void geo_cube(void)
     }
 }
 
+/* ==================== 动画表 ====================
+ *
+ * 每个 frame 函数**自己负责整条流水线**：
+ *   超采样类（球 / 立方体）：h_clear() → 画 → geo_compose()
+ *   直接类（扩散环）：直接画 s_gbuf（它本身就是连续的距离场，超采样没意义）
+ *
+ * 这样 tick 里不再有 "if (s_anim == 2)" 这种特例，也不会出现"加了新动画
+ * 却忘了加 case、被 default 静默当成立方体"的情况 —— 表是定长的，
+ * 越界在下标检查那一步就被拒绝了。
+ *
+ * 表里只有两个函数指针，const 放 Flash，RAM 开销 0。
+ */
+typedef struct {
+    void (*frame)(const app_in_t *in);   /* 画一帧（含自己的 clear / compose）*/
+    void (*reset)(void);                 /* 进入/切换时重置，0 = 无状态 */
+} geo_anim_t;
+
+static void anim_ball_frame(const app_in_t *in)
+{
+    h_clear();
+    geo_ball(in);
+    geo_compose();
+}
+
+static void anim_cube_frame(const app_in_t *in)
+{
+    (void) in;                           /* 立方体不吃重力 */
+    h_clear();
+    geo_cube();
+    geo_compose();
+}
+
+static void geo_reset_ring(void)
+{
+    s_ringR = 0u;
+}
+
+static void anim_ring_frame(const app_in_t *in)
+{
+    (void) in;
+    geo_ring();                          /* 直接画 s_gbuf，不超采样 */
+}
+
+static const geo_anim_t s_anims[] = {
+    { anim_ball_frame, geo_reset_ball },   /* 0 弹跳球（吃 IMU 重力）*/
+    { anim_cube_frame, 0              },   /* 1 旋转立方体 */
+    { anim_ring_frame, geo_reset_ring },   /* 2 扩散环 */
+};
+
+#define GEO_ANIM_COUNT  ((uint8_t) (sizeof(s_anims) / sizeof(s_anims[0])))
+
+/* 给 app.c 的 route_item_count() 用：几何大类的项数 = 表长，加动画自动跟着变 */
+uint8_t GeomScene_AnimCount(void) { return GEO_ANIM_COUNT; }
+
 /* ==================== 场景 4 接口 ==================== */
 
 void GeomScene_Select(uint8_t n)
 {
-    if (n > 2u) {                        /* 0 球 / 1 立方体 / 2 扩散环 */
+    if (n >= GEO_ANIM_COUNT) {           /* 越界拒绝，不再靠 default 兜底 */
         return;
     }
     s_anim      = n;
     s_geoInited = 0u;
-    s_ringR     = 0u;
     geo_clear();
 }
 
@@ -694,8 +757,9 @@ void GeomScene_Tick(const app_in_t *in)
     if (s_geoInited == 0u) {
         s_geoInited = 1u;
         s_phase     = 0u;
-        if (s_anim == 0u) {
-            geo_reset_ball();
+        s_frames    = 0u;
+        if (s_anims[s_anim].reset != 0) {
+            s_anims[s_anim].reset();
         }
         s_nextMs = in->now_ms;
     }
@@ -706,25 +770,9 @@ void GeomScene_Tick(const app_in_t *in)
     s_nextMs += GEO_FPS_MS;
 
     geo_fade();
-
-    /* 环动画直接在 15×16 上按距离场算，不需要超采样（它本身就是连续的）*/
-    if (s_anim == 2u) {
-        geo_ring();
-        geo_flush();
-        s_phase = (uint16_t) ((s_phase + 2u) & 0xFFu);
-        s_frames++;
-        return;
-    }
-
-    h_clear();
-
-    switch (s_anim) {
-        case 0u:  geo_ball(in);  break;
-        default:  geo_cube();    break;
-    }
-
-    geo_compose();
+    s_anims[s_anim].frame(in);          /* 动画自己负责 clear / compose */
     geo_flush();
+
     s_phase = (uint16_t) ((s_phase + 2u) & 0xFFu);
     s_frames++;
 }
@@ -738,7 +786,7 @@ uint8_t GeomScene_Cmd(uint16_t id, const int32_t *arg)
 {
     switch (id) {
         case DBG_CMD_GEOM_ANIM:
-            if ((arg[0] >= 0) && (arg[0] <= 2)) {
+            if ((arg[0] >= 0) && (arg[0] < (int32_t) GEO_ANIM_COUNT)) {
                 GeomScene_Select((uint8_t) arg[0]);
             } else {
                 dbg.cmd.result = 2u;
