@@ -355,6 +355,7 @@ static const vcmd_alias_t s_alias[] = {
     { "gball",  DBG_CMD_GEOM_BALL,  0 },  /* gball 3       球半径 1~6 像素 */
     { "gkick",  DBG_CMD_GEOM_KICK,  0 },  /* gkick 3       碰边弹起速度 1~8 px/帧 */
     { "gdamp",  DBG_CMD_GEOM_DAMP,  0 },  /* gdamp 2       水平阻尼 0~8，0 = 关 */
+    { "horient", DBG_CMD_GEOM_HORIENT, 0 },  /* horient 4    心跳朝向 0~3 锁定 / 4 跟重力 */
 
     /* ---- 刹车高亮（brake.c）---- */
     { "brk",     DBG_CMD_BRAKE_ENABLE, 0 },  /* brk 1          刹车检测开关 */

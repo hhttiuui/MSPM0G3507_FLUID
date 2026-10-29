@@ -399,6 +399,7 @@ typedef struct {
 #define DBG_CMD_GEOM_BALL           0x0502u  /* gball <1-6>    弹跳球半径（像素）*/
 #define DBG_CMD_GEOM_KICK           0x0503u  /* gkick <1-8>    碰边后固定的弹起速度（px/帧）*/
 #define DBG_CMD_GEOM_DAMP           0x0504u  /* gdamp <0-8>    水平阻尼：0 = 关，越大衰减越快 */
+#define DBG_CMD_GEOM_HORIENT        0x0505u  /* horient <0-4>  心跳朝向：0~3 锁定，4 = 跟重力 */
 
 /* ---- 刹车高亮（brake.c）---- */
 #define DBG_CMD_BRAKE_ENABLE        0x0600u  /* brk <0|1>       检测开关 */
