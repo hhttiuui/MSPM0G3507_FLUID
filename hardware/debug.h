@@ -380,6 +380,7 @@ typedef struct {
 #define DBG_CMD_APP_MODE            0x0300u  /* arg[0] = 场景号（0 流体 / 1 静态图）*/
 #define DBG_CMD_APP_NEXT            0x0301u  /* 下一个场景（循环）*/
 #define DBG_CMD_APP_PREV            0x0302u  /* 上一个场景（循环）*/
+#define DBG_CMD_APP_PSAVE           0x0303u  /* psave <0|1|2>   0 强制关 / 1 强制开 / 2 自动 */
 
 /* 0x04xx = 场景 2：文字滚动。字符串走 VCMD_GetString()，不占邮箱参数 */
 #define DBG_CMD_TEXT_SET            0x0400u  /* text <UTF-8 字符串> */

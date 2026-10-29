@@ -154,24 +154,27 @@ uint8_t  Battery_QuietBegin(void);
  * 达到 BAT_LOW_CONFIRM 次即触发关机（不返回）。 */
 void     Battery_QuietSample(void);
 
-/* ==================== 低电关机 + 动画接口（预留）====================
+/* ==================== 低电关机 + 动画接口 ====================
  *
- * 默认行为：低电确认后**直接关机**。
+ * 默认行为（没注册动作时）：低电确认后**直接关机**。
  *
- * 以后要做"先播一段低电动画再关机"，只需在应用层注册一个动作函数：
+ * 本工程注册了关机动画，见 app.c 的 App_LowBatteryAction() / App_ShutdownAnim()：
  *
- *     static void MyLowBatteryAction(void)
+ *     static void App_LowBatteryAction(void)
  *     {
- *         LedShow_PlayLowBattery();     // 播动画（自己实现）
+ *         App_ShutdownAnim();           // 电池一格一格空掉 + 闪烁，约 1.1 s
  *         Battery_ShutdownNow();        // 播完再关
  *     }
- *     Battery_SetLowAction(MyLowBatteryAction);   // 在 main() 里注册一次
+ *     Battery_SetLowAction(App_LowBatteryAction);   // 在 App_Init() 里注册
  *
  * 要点：
  *   · 动作函数运行在主循环上下文，可以正常调用显示/延时函数；
  *   · 它应当在结束时调用 Battery_ShutdownNow()（不返回）；
  *   · 即使它返回了，Battery_QuietSample() 也会兜底调用一次关机，不会停在低电状态；
  *   · 动作函数里**不要**再调用 Battery_QuietSample()（会递归）。
+ *   · ⚠ 进动作函数时全局亮度（0x37）还是 **0** —— 调用方为了精确采样刚把屏
+ *     熄掉了。要在里面显示任何东西，第一步必须先把亮度恢复，否则整段动画
+ *     都在黑屏上播完（这个坑在 App_ShutdownAnim() 里踩过）。
  */
 typedef void (*bat_low_action_t)(void);
 

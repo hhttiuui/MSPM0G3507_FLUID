@@ -150,9 +150,17 @@ void App_ShowDirectFrame(const uint8_t *px);
 uint8_t App_Current(void);
 uint8_t App_Count(void);
 
-/* 全局亮度（0x37）。低电安静窗口熄屏采样后要恢复成**用户设的这个值**，
- * 不能写死 MAX —— 否则串口把 bc 调到 64，每 2 秒就被打回 255。 */
+/* 全局亮度（0x37）。低电安静窗口熄屏采样后要恢复成**当前生效值**，
+ * 不能写死 MAX —— 否则串口把 bc 调到 64，每 2 秒就被打回 255。
+ *
+ * 亮度分两层，别混：
+ *   App_SetBrightness(bc)  写"用户设定"（长按 / 串口 / 开机从 Flash 恢复）
+ *   App_Brightness()       读"实际生效值" = 省电模式封顶后的结果，显示层用它
+ *   App_BrightnessUser()   读"用户设定"，**存 Flash 只能用它**
+ *                          （存生效值的话，省电期间保存一次，下次开机
+ *                            用户设定就永久变成 128 了）*/
 void    App_SetBrightness(uint8_t bc);
 uint8_t App_Brightness(void);
+uint8_t App_BrightnessUser(void);
 
 #endif /* __APP_H */

@@ -196,8 +196,133 @@ static uint8_t  s_cur;              /* 当前场景号 */
 static uint8_t  s_started;          /* 0 = 还没进过任何场景（首次不进 exit）*/
 static uint32_t s_lastMs;           /* 上一帧的 tick_ms，用来算 dt */
 
-/* 全局亮度（0x37）。低电安静窗口熄屏采样后恢复的是这个值，不是写死的 MAX。 */
-static uint8_t  s_bc = HT16D33A_BRIGHTNESS_MAX;
+/* ==================== 全局亮度 / 电量 / 省电 ====================
+ *
+ * 亮度分两层，**别混**：
+ *
+ *   s_bcUser  用户设定。长按 USER3 / 串口 `bc` / 开机从 Flash 恢复都写这里。
+ *             ← **只有这个进 Flash**。存生效值的话，省电期间存下 128，
+ *               下次开机用户设定就永远回不到 255 了（这是个真坑）。
+ *   s_bcEff   实际写进 0x37 的值 = 省电模式对 s_bcUser 封顶后的结果。
+ *             ← 所有"恢复亮度"的地方（安静窗口、刹车退出）都用
+ *               App_Brightness()，它返回这个值，于是省电状态自动被尊重。
+ *
+ * 省电模式只做一件事：**给全局亮度加一个上限**，不碰任何场景的灰度表。
+ * 所以逐点之间的亮度比完全不变，画面结构不受影响，只是整体压暗 ——
+ * 这也意味着它**不能**改善"中心/边缘对比度"，那是灰度表的事。
+ */
+#define APP_BC_LADDER_N      (4u)
+
+/* 亮度档位：暗 → 亮。和长按 USER3 的循环顺序一致 */
+static const uint8_t s_bcLadder[APP_BC_LADDER_N] = { 64u, 128u, 192u, 255u };
+
+/* 省电模式的亮度上限（= 档位第二档，满亮的一半）。
+ * 为什么是"封顶"而不是"降两档"：降两档的话用户设 192 会变 64、设 255 会
+ * 变 128，同一个省电模式在不同档位下省的电不一样，行为不可预期。
+ * 封顶就是"最亮只能到 128"，省多少是确定的。
+ * 用户主动把亮度调到 64 仍然有效 —— 想更暗还能更暗。 */
+#define APP_PSAVE_CAP        (128u)
+
+/* 电量阈值(%)：低于 ON 进入省电，高于 OFF 退出。
+ * 两个阈值都落在 3650~3800 这一段（斜率 25%/150 mV），所以 5% 迟滞 = 30 mV。
+ * 比 BAT_LOW_HYST_MV(100 mV) 窄，但这里用的是 3 次中值滤波后的**空载**采样，
+ * 噪声在 ±10 mV 量级，30 mV 够用。 */
+#define APP_PSAVE_PCT_ON     (30u)
+#define APP_PSAVE_PCT_OFF    (35u)
+
+/* 空载电压 → 电量(%)。锂电放电曲线的 5 段折线。
+ *
+ * ⚠ 必须用**空载**读数：带载读数会被压低 200~335 mV（battery.h §③）。
+ *   同一颗 3.8 V 的电池带载读成 3.47 V，按这张表直接从 40% 掉到 0% ——
+ *   误差不是几个百分点，是整段垮掉。这也是安静窗口非做不可的原因。
+ *
+ *   4150 → 100%    4000 → 70%    3800 → 40%    3650 → 15%    3500 → 0%
+ *
+ * 平台区（3.7~3.9 V）电压变化小、电量变化大，所以这一段斜率必须平，
+ * 否则会看到"电量从 45% 直接掉到 20%"。整体误差仍有 ±10~15% ——
+ * 这是单节锂电靠电压估电量的物理极限，不是实现问题。
+ * 低于 3450 mV 就进了读数地板（battery.h §②），测不出来，一律当 0。 */
+static uint8_t App_BatPercent(uint32_t mv)
+{
+    static const uint16_t v[5] = { 3500u, 3650u, 3800u, 4000u, 4150u };
+    static const uint8_t  p[5] = {    0u,   15u,   40u,   70u,  100u };
+    uint8_t i;
+
+    if (mv >= (uint32_t) v[4]) {
+        return p[4];
+    }
+    if (mv <= (uint32_t) v[0]) {
+        return 0u;
+    }
+
+    for (i = 0u; i < 4u; i++) {
+        if (mv < (uint32_t) v[i + 1u]) {
+            uint32_t num = (uint32_t) (mv - v[i]) * (uint32_t) (p[i + 1u] - p[i]);
+
+            return (uint8_t) ((uint32_t) p[i] + num / (uint32_t) (v[i + 1u] - v[i]));
+        }
+    }
+    return p[4];
+}
+
+/* 用户设定（进 Flash）。低电安静窗口熄屏采样后恢复的是"生效值"，不是这个。 */
+static uint8_t  s_bcUser = HT16D33A_BRIGHTNESS_MAX;
+
+/* 实际写进 0x37 的值（省电封顶之后）*/
+static uint8_t  s_bcEff  = HT16D33A_BRIGHTNESS_MAX;
+
+static uint8_t  s_psave;        /* 1 = 省电中（亮度封顶）*/
+static uint8_t  s_psaveVeto;    /* 1 = 用户手动调过亮度，别再自动降 */
+
+/* 调试强制（串口 `psave`）：0 = 自动，1 = 强制开，2 = 强制关。
+ * 和 veto 的区别：veto 是"用户否决"，电量回到 APP_PSAVE_PCT_OFF 以上会
+ * 自动失效；force 不会 —— 专门用来在没有低电电池的情况下验降档效果，
+ * 不然命令发下去 2 秒就被下一次安静窗口的自动判定推翻了。 */
+static uint8_t  s_psaveForce;
+
+/* 按"用户设定 + 省电状态"算出实际亮度并写芯片。
+ * ⚠ 这里**不碰 Flash**（不调 route_mark_dirty）：省电是自动行为，
+ *   电量在 30% 附近抖动时如果每次都标脏，会反复擦写扇区。
+ *   用户主动改亮度才标脏，那条路径在调用方。 */
+static void app_bright_apply(void)
+{
+    uint8_t v = s_bcUser;
+
+    if ((s_psave != 0u) && (v > APP_PSAVE_CAP)) {
+        v = APP_PSAVE_CAP;
+    }
+    s_bcEff = v;
+    HT16D33A_SetBrightness(s_bcEff);
+}
+
+/* 按最近一次**空载**读数更新省电状态。只改标志、不写芯片 ——
+ * 调用方紧接着会调 app_bright_apply()，避免连写两次 0x37。 */
+static void app_psave_update(uint32_t mv)
+{
+    uint8_t pct;
+
+    if (s_psaveForce != 0u) {
+        return;                     /* 被串口 `psave` 强制，自动判定不介入 */
+    }
+    if (mv == 0u) {
+        return;                     /* 读不到就保持原状，别乱切 */
+    }
+    pct = App_BatPercent(mv);
+
+    if (s_psave == 0u) {
+        if (pct >= APP_PSAVE_PCT_OFF) {
+            /* 电量回到上限以上，否决权失效 —— 否则用户否决一次就永久
+             * 不再进省电了（踩过：veto 只在"省电中"那条分支里清，
+             * 而否决之后 psave 恒为 0，那条分支永远走不到）。 */
+            s_psaveVeto = 0u;
+        } else if ((s_psaveVeto == 0u) && (pct <= APP_PSAVE_PCT_ON)) {
+            s_psave = 1u;
+        }
+    } else if (pct >= APP_PSAVE_PCT_OFF) {
+        s_psave     = 0u;
+        s_psaveVeto = 0u;
+    }
+}
 
 /* ==================== 输入层状态 ==================== */
 
@@ -512,13 +637,19 @@ void App_Step(int8_t d)
 uint8_t App_Current(void) { return s_cur; }
 uint8_t App_Count(void)   { return SCENE_COUNT; }
 
+/* 用户主动改亮度（长按 / 串口 bc / 开机从 Flash 恢复）。
+ * 只记"用户设定"，实际写进 0x37 的是封顶后的值 —— 见 app_bright_apply()。 */
 void App_SetBrightness(uint8_t bc)
 {
-    s_bc = bc;
-    HT16D33A_SetBrightness(s_bc);
+    s_bcUser = bc;
+    app_bright_apply();
 }
 
-uint8_t App_Brightness(void) { return s_bc; }
+/* 显示层用这个：已经算上省电封顶。安静窗口 / 刹车退出恢复亮度都走它 */
+uint8_t App_Brightness(void) { return s_bcEff; }
+
+/* 存 Flash 用这个：必须存用户设定，不能存封顶后的值 */
+uint8_t App_BrightnessUser(void) { return s_bcUser; }
 
 /* ==================== 两级路由（大类 × 小类）====================
  *
@@ -634,7 +765,9 @@ static void route_save(void)
     for (i = 0u; i < (uint8_t) ROUTE_CAT_COUNT; i++) {
         st.item[i] = s_item[i];
     }
-    st.bc = App_Brightness();
+    /* 存**用户设定**，不是 App_Brightness()（那是省电封顶后的生效值）。
+     * 存错的话，省电期间保存一次，下次开机用户设定就永久变成 128 了。 */
+    st.bc = App_BrightnessUser();
 
     if (FlashStore_SettingsSave(&st) != 0u) {
         s_dirty = 0u;
@@ -760,10 +893,15 @@ void Route_Tick(void)
  *
  * ⚠ 熄屏这一步不能省：电源自锁释放后，整机还要靠保持电容撑一小会儿，
  *   不熄屏的话最后那一帧会冻在屏上。 */
+/* 关机动画定义在后面（和开机电量画面共用绘制函数），这里先声明 */
+static void App_ShutdownAnim(void);
+
 static void App_LowBatteryAction(void)
 {
-    LedMatrix_Clear();
-    LedMatrix_Flush();              /* 立即熄屏（约 1.2ms）*/
+    /* 低电确认（连续 3 次 < BAT_LOW_MV）后先播一段关机动画再断电。
+     * 约 1.1 s，期间按键可跳过 —— 跳过也照样关机。
+     * ⚠ 必须在 ShutdownNow() 之前：那之后是 for(;;) __WFI()，没有代码再执行了。 */
+    App_ShutdownAnim();
 
     Battery_ShutdownNow();          /* 释放电源自锁；不返回 */
 }
@@ -939,6 +1077,31 @@ void App_CmdTask(void)
             App_Step(-1);
             break;
 
+        /* ---------------- 省电模式（调试用） ----------------
+         * psave 0 = 强制关（同时置否决位，防止下一轮采样又自动打开）
+         * psave 1 = 强制开（亮度封顶到 APP_PSAVE_CAP）
+         * psave 2 = 交回自动判定（按电量 30%/35% 迟滞）
+         * 有它就不用等电池真掉到 30% 才能验降档效果。 */
+        case DBG_CMD_APP_PSAVE:
+            if ((arg[0] >= 0) && (arg[0] <= 2)) {
+                if (arg[0] == 0) {
+                    s_psaveForce = 2u;      /* 强制关，且自动判定不再介入 */
+                    s_psave      = 0u;
+                    s_psaveVeto  = 1u;
+                } else if (arg[0] == 1) {
+                    s_psaveForce = 1u;      /* 强制开 */
+                    s_psave      = 1u;
+                } else {
+                    s_psaveForce = 0u;      /* 交回自动判定 */
+                    s_psave      = 0u;
+                    s_psaveVeto  = 0u;
+                }
+                app_bright_apply();
+            } else {
+                dbg.cmd.result = 2u;
+            }
+            break;
+
         /* ---------------- 其余交给当前场景 ---------------- */
         default:
             if ((s_scenes[s_cur].cmd == 0) ||
@@ -959,14 +1122,18 @@ void App_CmdTask(void)
  * 是因为没有屏幕显示"当前多少"，档位跳变最容易感知。 */
 static uint8_t app_bright_next(void)
 {
-    static const uint8_t ladder[] = { 64u, 128u, 192u, 255u };
-    uint8_t cur  = s_bc;
-    uint8_t next = ladder[0];
+    uint8_t cur  = s_bcUser;
+    uint8_t next = s_bcLadder[0];
     uint8_t i;
 
-    for (i = 0u; i < (uint8_t) (sizeof(ladder) / sizeof(ladder[0])); i++) {
-        if (ladder[i] > cur) {
-            next = ladder[i];
+    /* ⚠ 这里**不要**为省电模式截断档位表。调用方（app_user3_task）在长按时
+     *   已经把 s_psave 清掉了 —— 省电下的第一下长按只负责"解除封顶、恢复
+     *   用户设定"，不跳档；之后才走这里的正常 4 档循环。
+     *   早先版本在这里按 s_psave 截断成 2 档，配合"长按直接跳档"会算出
+     *   255 → 64，用户想变亮却变最暗。 */
+    for (i = 0u; i < APP_BC_LADDER_N; i++) {
+        if (s_bcLadder[i] > cur) {
+            next = s_bcLadder[i];
             break;
         }
     }
@@ -990,8 +1157,23 @@ static void app_user3_task(void)
             s_downMs = tick_ms;
         } else if ((s_long == 0u) && ((tick_ms - s_downMs) >= APP_KEY_LONG_MS)) {
             s_long = 1u;
-            App_SetBrightness(app_bright_next());
-            route_mark_dirty();             /* 让设置记录 2 s 后落盘 */
+            if (s_psave != 0u) {
+                /* 省电模式下长按 = **用户否决省电**，而且这一下**只负责
+                 * "亮回来"，不跳档**。
+                 *
+                 * 为什么不能顺手调一档：用户设的是 255、屏幕上是 128（封顶），
+                 * 此时 app_bright_next() 从 255 往上找不到档位，会循环回 64 ——
+                 * 用户想变亮，结果变成最暗，这是实测出来的坑。
+                 * 第一下长按恢复用户设定，之后的长按才正常循环。
+                 * veto 保持到电量回到 APP_PSAVE_PCT_OFF 以上，否则 2 s 后
+                 * 又被自动降档，用户会以为按键坏了。 */
+                s_psave     = 0u;
+                s_psaveVeto = 1u;
+                App_SetBrightness(s_bcUser);    /* 档位不动，只是解除封顶 */
+            } else {
+                App_SetBrightness(app_bright_next());
+                route_mark_dirty();             /* 让设置记录 2 s 后落盘 */
+            }
         }
         return;
     }
@@ -1007,11 +1189,287 @@ static void app_user3_task(void)
     /* 长按的那次松手不再触发任何动作 —— 已经消费在亮度上了 */
 }
 
+/* ==================== 低电安静窗口 ==================== */
+
+/* LED 满载 360 mA 会把电池读数压低 200~335 mV（battery.h §③），所以必须
+ * 先熄屏再采，否则一颗健康的 3.8 V 电池会被读成 3.43 V，直接误判低电关机。
+ *
+ * 用 0x37 = 0 熄屏：一条命令立即生效，不清帧缓冲、也不等扫描走完，
+ * 采样后写回就能原样恢复画面。熄屏 ≈ BAT_SETTLE_MS + 一次采样 ≈ 1.5 ms，
+ * 肉眼不可见。
+ *
+ * ⚠ 这段以前只写在 fluid_demo.c 里，于是**只有流体场景会刷新电量**：
+ *   心跳 / 文字 / 静态图下 dbg.bat.mv 永远停在开机那一次采样，
+ *   低电保护和省电模式全都静默失效（battery.h §"渲染层必须配合"警告过）。
+ *   现在提到这里，所有场景共享；以后加新场景**不需要**再管这件事。
+ *
+ * 必须**在场景 tick 之前**调用：熄屏只改 0x37，DDRAM 内容不动，所以紧接着
+ * 的 tick 重绘、或者"定格不重绘"，都不会让画面出错，恢复亮度就是原样。 */
+static void App_QuietWindow(void)
+{
+    if (Battery_QuietBegin() == 0u) {
+        return;
+    }
+
+    HT16D33A_SetBrightness(HT16D33A_BRIGHTNESS_OFF);
+    mspm0_delay_ms(BAT_SETTLE_MS);
+    Battery_QuietSample();              /* 低电确认时这里直接关机，不返回 */
+
+    app_psave_update(dbg.bat.mv);       /* 只改标志，不写芯片 */
+    app_bright_apply();                 /* 恢复亮度（省电模式下是封顶后的值）*/
+}
+
+/* ==================== 开机电量画面 ==================== */
+
+/* 布局（应用坐标 15 列 × 16 行，见 led_matrix.h）：
+ *
+ *        正极帽  x 6~10, y 1
+ *        外壳    x 4~12 的 y 2 / y 16 两条横边
+ *                x 4 / x 12 的 y 2~16 两条竖边
+ *        液柱    x 5~11, y 3~15（13 行），从下往上填
+ *
+ * 边框亮度给 32 而不是 56：DDRAM 是物理线性的，人眼 ≈ 亮度^0.45，
+ * 56 在眼里已经是 sRGB 130 的中灰，会抢液柱的视觉重量。
+ *
+ * **不跟随重力**：开机时设备朝向还没确定（用户可能正拿着、正在转），
+ * 画面跟着转反而乱。固定竖放，进了场景再由各场景自己摆正。
+ */
+#define APP_SPLASH_FRAME_LV  (32u)    /* 外壳 / 正极帽亮度 */
+#define APP_SPLASH_FILL_LV   (255u)   /* 液柱亮度 */
+#define APP_SPLASH_EDGE_MS   (200u)   /* ① 边框先出现 */
+#define APP_SPLASH_RISE_MS   (25u)    /* ② 液柱每升一行 */
+#define APP_SPLASH_HOLD_MS   (600u)   /* ③ 停留 */
+#define APP_SPLASH_BLINK_MS  (150u)   /* ④ 低电闪烁的半周期 */
+#define APP_SPLASH_FADE_MS   (250u)   /* ⑤ 整体淡出（分 8 帧） */
+#define APP_SPLASH_ROWS      (13u)    /* 液柱总行数 */
+
+/* 电量 → 液柱行数。四舍五入；非 0 时至少 1 行 ——
+ * 否则 5% 和 0% 长得一样，用户会以为电池已经空了。 */
+static uint8_t app_splash_rows(uint8_t pct)
+{
+    uint8_t h = (uint8_t) (((uint16_t) pct * APP_SPLASH_ROWS + 50u) / 100u);
+
+    if ((h == 0u) && (pct != 0u)) {
+        h = 1u;
+    }
+    return h;
+}
+
+/* 画一帧。rows = 液柱行数 0~13；fillLv = 液柱亮度（淡出时逐帧降）*/
+static void app_splash_draw(uint8_t rows, uint8_t frameLv, uint8_t fillLv)
+{
+    uint8_t x, y;
+
+    LedMatrix_Clear();
+
+    for (x = 6u; x <= 10u; x++) {                           /* 正极帽 */
+        LedMatrix_SetCellLevel(x, 1u, frameLv);
+    }
+    for (x = 4u; x <= 12u; x++) {                           /* 上下横边 */
+        LedMatrix_SetCellLevel(x, 2u, frameLv);
+        LedMatrix_SetCellLevel(x, 16u, frameLv);
+    }
+    for (y = 2u; y <= 16u; y++) {                           /* 左右竖边 */
+        LedMatrix_SetCellLevel(4u, y, frameLv);
+        LedMatrix_SetCellLevel(12u, y, frameLv);
+    }
+    for (y = (uint8_t) (15u - rows + 1u); y <= 15u; y++) {  /* 液柱：从下往上 */
+        for (x = 5u; x <= 11u; x++) {
+            LedMatrix_SetCellLevel(x, y, fillLv);
+        }
+    }
+
+    LedMatrix_Flush();
+}
+
+/* 等 ms，期间按键可跳过。返回 1 = 用户要求跳过。
+ *
+ * ⚠ 用 Key_TookPress()（按下**边沿**）而不是 Key_IsDown()（电平）：
+ *   本板 USER2(PA24) 没装按键、引脚悬空恒读低，用电平判会一进来就退出
+ *   （led_show.c:200 踩过同一个坑）。边沿判据天生免疫卡住的键。
+ *   三个键都读一遍，把边沿标志清干净，免得留给后面的场景。 */
+static uint8_t app_splash_wait(uint32_t ms)
+{
+    uint32_t t0 = tick_ms;
+    uint8_t  hit = 0u;
+
+    while ((uint32_t) (tick_ms - t0) < ms) {
+        PowerKey_CheckShutdown();       /* 长按 USER1 关机在开机画面期间仍然有效 */
+
+        if (Key_TookPress(KEY_USER1) != 0u) { hit = 1u; }
+        if (Key_TookPress(KEY_USER2) != 0u) { hit = 1u; }
+        if (Key_TookPress(KEY_USER3) != 0u) { hit = 1u; }
+        if (hit != 0u) {
+            return 1u;
+        }
+        __WFI();
+    }
+    return 0u;
+}
+
+/* ==================== 关机动画 ====================
+ *
+ * 低电关机前播一段：**当前电量 → 最后一格消失 → 空电池闪 3 下 → 边框淡出**。
+ * 约 1.1 s。两个时机共用同一个函数：
+ *   · 开机就低电      → App_BootSplash() 里判定后直接播
+ *   · 运行中确认低电  → App_LowBatteryAction()（battery.c 的钩子）
+ *
+ * 为什么不做"满格掉到空"：低电关机时电量必然只剩 0~1 格（阈值 3550 mV
+ * 对应约 5%），画满格再掉光是假的，还会让人以为电量中途回升过。
+ * 直接从"你只剩这一格"开始，反而更直白。
+ *
+ * ⚠ 进来时必须先把 0x37 恢复：运行中这条路是从 Battery_QuietSample() 进来的，
+ *   外面刚把亮度写成 0 熄屏采样，不恢复的话整段动画都在黑屏上播完。
+ */
+#define APP_SHUT_HOLD_MS     (80u)    /* ① 定格当前电量 */
+#define APP_SHUT_DROP_MS     (60u)    /* ② 最后一格消失 */
+#define APP_SHUT_BLINK_MS    (130u)   /* ③ 空电池闪烁的半周期 */
+#define APP_SHUT_FADE_MS     (200u)   /* ④ 边框淡出（分 6 帧） */
+
+static void App_ShutdownAnim(void)
+{
+    uint8_t i, rows, lv;
+
+    /* ① 恢复亮度，而且**直接用满档**。
+     *   两个理由：
+     *   · 运行中这条路进来时 0x37 还是 0（安静窗口刚熄屏采样），不恢复就是黑屏；
+     *   · 此刻多半已经在省电模式里（eff=128），边框 32 乘上 128/255 只剩
+     *     sRGB 71，几乎看不见 —— 而这是设备最后一次点亮，必须让人看清。
+     *     满亮 1 秒 ≈ 0.1 mAh，相对于"已经要关机了"完全可以忽略。 */
+    HT16D33A_SetBrightness(HT16D33A_BRIGHTNESS_MAX);
+
+    /* ② 定格当前电量，让用户看清"确实只剩这么点" */
+    rows = app_splash_rows(App_BatPercent(dbg.bat.mv));
+    app_splash_draw(rows, APP_SPLASH_FRAME_LV, APP_SPLASH_FILL_LV);
+    if (app_splash_wait(APP_SHUT_HOLD_MS) != 0u) { goto shut_done; }
+
+    /* ③ 最后一格消失 */
+    if (rows != 0u) {
+        app_splash_draw(0u, APP_SPLASH_FRAME_LV, 0u);
+        if (app_splash_wait(APP_SHUT_DROP_MS) != 0u) { goto shut_done; }
+    }
+
+    /* ④ 空电池闪 3 下 —— 这一段是动画的主体，读作"没电了" */
+    for (i = 0u; i < 3u; i++) {
+        app_splash_draw(0u, APP_SPLASH_FRAME_LV, 0u);
+        if (app_splash_wait(APP_SHUT_BLINK_MS) != 0u) { goto shut_done; }
+        app_splash_draw(0u, 0u, 0u);
+        if (app_splash_wait(APP_SHUT_BLINK_MS) != 0u) { goto shut_done; }
+    }
+
+    /* ⑤ 边框淡出，别"啪"一下就黑 */
+    for (i = 6u; i > 0u; i--) {
+        lv = (uint8_t) ((uint32_t) APP_SPLASH_FRAME_LV * i / 6u);
+        app_splash_draw(0u, lv, 0u);
+        if (app_splash_wait(APP_SHUT_FADE_MS / 6u) != 0u) { goto shut_done; }
+    }
+
+shut_done:
+    /* 留一张全黑的屏给 ShutdownNow()。它也靠保持电容撑一小会儿，
+     * 这期间屏幕上不该还挂着半张电池图。 */
+    LedMatrix_Clear();
+    LedMatrix_Flush();
+}
+
+/* 上电先报一次电量，约 1.4 s，按任一键可跳过。
+ *
+ * 为什么要做：这块板子没有电压显示，电池剩多少全靠猜；而开机本来就要等
+ * IMU 初始化，这一秒多正好用来说一件有用的事。
+ *
+ * 调用点见 App_Init()：放在 IQ 自检和 IMU 初始化**之后** —— 那两步失败会
+ * FillAll 卡死，属于故障指示，不该被电量图盖掉；能走到这里就说明硬件都正常。 */
+static void App_BootSplash(void)
+{
+    uint8_t  pct, rows, i, lv, low;
+    uint32_t mv, v;
+
+    /* 重采。main() 里那次紧跟 SYSCFG_DL_init，LDO 输出可能还没稳；
+     * 此刻 LED 全黑、电源已经工作了几十毫秒，读数更可信。
+     *
+     * 连采 BAT_LOW_CONFIRM 次（间隔 40 ms）：**单次读数偏低就判定"没电"直接
+     * 关机太危险** —— 一颗好电池被关掉，用户只会以为板子坏了。
+     * 3 次全低才认，和运行期那套确认逻辑对齐。 */
+    mv  = 0u;
+    low = 0u;
+    for (i = 0u; i < BAT_LOW_CONFIRM; i++) {
+        if (i != 0u) {
+            mspm0_delay_ms(40u);
+        }
+        v = Battery_ReadMilliVolt();
+        if (v != 0u) {
+            mv = v;
+            if (v < BAT_LOW_MV) {
+                low++;
+            }
+        }
+    }
+
+    if (mv == 0u) {
+        return;                     /* 一直读不到：别显示 0% 的电池，也别关机 */
+    }
+
+    /* 开机就低电：不播电量画面，直接播关机动画然后关。
+     * 动画第一帧就是真实电量（0~1 格），所以不需要额外定格。
+     * ShutdownNow() 不返回 —— 后面的 GlyphStore_Load / Route_Init 都不会执行。 */
+    if (low >= BAT_LOW_CONFIRM) {
+        App_ShutdownAnim();
+        Battery_ShutdownNow();
+    }
+
+    pct  = App_BatPercent(mv);
+    rows = app_splash_rows(pct);
+
+    /* ① 边框先立住，液柱 0 行 */
+    app_splash_draw(0u, APP_SPLASH_FRAME_LV, 0u);
+    if (app_splash_wait(APP_SPLASH_EDGE_MS) != 0u) { goto splash_done; }
+
+    /* ② 液柱逐行涨上去 */
+    for (i = 1u; i <= rows; i++) {
+        app_splash_draw(i, APP_SPLASH_FRAME_LV, APP_SPLASH_FILL_LV);
+        if (app_splash_wait(APP_SPLASH_RISE_MS) != 0u) { goto splash_done; }
+    }
+
+    /* ③ 停留 */
+    if (app_splash_wait(APP_SPLASH_HOLD_MS) != 0u) { goto splash_done; }
+
+    /* ④ 电量 ≤ 20% 时闪两下，提醒该充电了（不影响正常启动）*/
+    if (pct <= 20u) {
+        for (i = 0u; i < 2u; i++) {
+            app_splash_draw(0u, APP_SPLASH_FRAME_LV, 0u);
+            if (app_splash_wait(APP_SPLASH_BLINK_MS) != 0u) { goto splash_done; }
+            app_splash_draw(rows, APP_SPLASH_FRAME_LV, APP_SPLASH_FILL_LV);
+            if (app_splash_wait(APP_SPLASH_BLINK_MS) != 0u) { goto splash_done; }
+        }
+    }
+
+    /* ⑤ 淡出：边框和液柱一起衰减，8 帧 */
+    for (i = 8u; i > 0u; i--) {
+        lv = (uint8_t) ((uint32_t) APP_SPLASH_FRAME_LV * i / 8u);
+        app_splash_draw(rows, lv,
+                        (uint8_t) ((uint32_t) APP_SPLASH_FILL_LV * i / 8u));
+        if (app_splash_wait(APP_SPLASH_FADE_MS / 8u) != 0u) { goto splash_done; }
+    }
+
+splash_done:
+    /* 交出去之前灭屏。Route_Boot() 里的 App_Goto 也会清屏，但那是"切场景"
+     * 的语义；这里先灭掉，万一后面哪步卡住也不会留一张电量图当背景。 */
+    LedMatrix_Clear();
+    LedMatrix_Flush();
+
+    /* 用开机这次采样直接判一次省电。不这么做的话要等 2 s 后的第一次安静
+     * 窗口才降档，用户会看到"开机全亮一下、然后突然变暗"。 */
+    app_psave_update(dbg.bat.mv);
+    app_bright_apply();
+}
+
 /* ==================== 每帧 ==================== */
 
 void App_Tick(void)
 {
     app_in_t in;
+
+    /* 低电安静窗口：必须**在场景 tick 之前**（理由见函数上方注释）*/
+    App_QuietWindow();
 
     App_ReadInput(&in);
 
@@ -1122,6 +1580,21 @@ static void App_Init(void)
     s_lastMs    = tick_ms;
 
     dbg.app.scene_cnt = SCENE_COUNT;
+
+    /* ---- 开机电量画面（约 1.4 s，按任一键跳过）----
+     * 放在这里而不是更早，有两个原因：
+     *   ① 上面的 IQ 自检 / IMU 初始化失败会 FillAll 卡死，那是故障指示，
+     *      不该被电量图盖掉 —— 能走到这一行就说明硬件都正常；
+     *   ② 电源已经工作了几十毫秒，重采样比 main() 里那次更可信。
+     * 也不跟随重力：开机时朝向还没确定，固定竖放。 */
+    App_BootSplash();
+
+    /* ⚠ 上面阻塞了 1.4 s，dt 基准必须重新对时。
+     *   否则主循环第一帧会拿到一个 1400 ms 的 dt（App_ReadInput 只截断到
+     *   65535，拦不住），假重力也会因为 s_tiltStart 落后而提前换向。
+     *   现在的场景不用 dt_ms，但 brake.c 用了 —— 以后打开 BRAKE_ENABLE 就会踩。 */
+    s_lastMs    = tick_ms;
+    s_tiltStart = tick_ms;
 
     /* 从 Flash 恢复自定义滚动消息（只读进 RAM，不做任何绘制）。
      * 校验失败 / 没存过 → 什么都不做，文字场景用内置字库。 */

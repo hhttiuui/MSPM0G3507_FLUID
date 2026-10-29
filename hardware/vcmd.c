@@ -330,6 +330,7 @@ static const vcmd_alias_t s_alias[] = {
     { "mode",   DBG_CMD_APP_MODE, 0 },   /* mode 1        切到指定场景 */
     { "next",   DBG_CMD_APP_NEXT, 0 },   /* next          下一个场景 */
     { "prev",   DBG_CMD_APP_PREV, 0 },   /* prev          上一个场景 */
+    { "psave",  DBG_CMD_APP_PSAVE, 0 },  /* psave 1       省电 0 强制关 / 1 强制开 / 2 自动 */
 
     /* ---- 场景 2：文字滚动 ---- */
     { "text",   DBG_CMD_TEXT_SET,  1 },   /* text 你好世界  换文字（带字符串）*/

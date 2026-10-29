@@ -33,12 +33,11 @@
 #include "ti_msp_dl_config.h"
 #include "clock.h"
 #include "debug.h"
-#include "battery.h"
 #include "fluid.h"
 #include "fluid_demo.h"
 #include "led_matrix.h"
 #include "ht16d33a.h"       /* 渲染要按 HT16D33A_USE_BINARY_MODE 分支（灰度 or 二进制）*/
-#include "app.h"            /* 场景框架：app_in_t / App_Brightness */
+#include "app.h"            /* 场景框架：app_in_t */
 #include "scenes.h"         /* 本文件的 FluidScene_* 声明 */
 
 /* ==================== 配置 ==================== */
@@ -230,25 +229,18 @@ static void FluidDemo_Push(void)
 {
     uint8_t x, y;
 
-    /* ---- 低电检查的"安静窗口"（每 BAT_CHECK_MS 一次）----
-     * LED 满载 360mA 会把电池读数压低 200~335mV（实测），所以必须先把屏熄掉
-     * 再采；否则一颗健康的 3.8V 电池会被读成 3.43V，直接误判低电关机。
-     *
-     * 用全局亮度 0x37 = 0 熄屏：一条命令立即生效，不清帧缓冲、也不等扫描走完，
-     * 采样后写回 MAX 就能原样恢复画面。
-     * 熄屏时长 ≈ BAT_SETTLE_MS + 一次采样(≈0.5ms) ≈ 1.5ms，肉眼不可见。 */
-    if (Battery_QuietBegin() != 0u) {
-        HT16D33A_SetBrightness(HT16D33A_BRIGHTNESS_OFF);
-        mspm0_delay_ms(BAT_SETTLE_MS);
-        Battery_QuietSample();                  /* 低电确认时这里可能直接关机（不返回）*/
-        HT16D33A_SetBrightness(App_Brightness());  /* 恢复用户设定的亮度，不是写死 MAX */
-    }
+    /* 低电安静窗口不在这里做了 —— 已经提到 app.c 的 App_QuietWindow()，
+     * 由 App_Tick() 在场景 tick 之前统一处理，所有场景共享。
+     * 原因：原来只有本场景会熄屏采样，于是心跳 / 文字 / 静态图下
+     * dbg.bat.mv 永远停在开机值，低电保护和省电模式全都静默失效。
+     * ⚠ 别在这里再加一份：会连着熄两次屏，白花 1.5 ms。 */
 
     /* ---- 显示锁：串口 `lock 1` 之后流体不再改画面 ----
      * 用途是亮度标定 —— 需要一块**完全静止**的画面才能稳定读数。
      * 冻结的是"重建帧 + 推屏"这两步，芯片显示 RAM 里的内容会一直保持
      * （HT16D33A 自带扫描，不需要 MCU 持续刷新）。
-     * 低电安静窗口仍然照跑（在上面），所以锁着的时候电池保护依然有效。 */
+     * 低电采样在 App_Tick() 里、进本函数之前就已经跑过了，所以锁着的时候
+     * 电池保护依然有效。 */
     if (s_dispLock != 0u) {
         return;
     }
