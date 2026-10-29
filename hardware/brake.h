@@ -105,6 +105,25 @@
 #include <stdint.h>
 #include "app.h"
 
+/* ==================== 总开关 ====================
+ *
+ * 0 = 整个模块不参与编译（**当前默认**）。brake.c 的实现被整段 #if 掉，
+ *     本头文件提供一组空实现，所以 app.c 的调用点和串口命令表一个字都不用改。
+ * 1 = 启用刹车高亮。
+ *
+ * 为什么要有这个开关：检测逻辑一直在每帧跑（读 IMU、算基线、判滞回），
+ * 调其它功能时它会突然接管屏幕，干扰观察。关掉之后：
+ *   · 主循环不再调用检测，屏幕完全由场景决定
+ *   · `brk` `brkf` `brkthr` 等命令变成空操作（`brkthr` 这类会返回失败码）
+ *   · 省下 brake.c 的全部代码（实测 3.5 KB Flash）和 320 B 状态
+ *     （SRAM，其中 s_saved 帧快照就占 256 B）
+ *
+ * 重新启用只需把下面的 0 改成 1，不用动任何其它文件。
+ */
+#ifndef BRAKE_ENABLE
+#define BRAKE_ENABLE    0
+#endif
+
 /* ---- 刹车时显示什么 ---- */
 #define BRAKE_DISP_SOLID    0u      /* 全屏满亮（默认，也是用户要的效果）*/
 #define BRAKE_DISP_BAR      1u      /* 下半屏满亮（预留示例）*/
@@ -120,6 +139,8 @@
  *     Brake_SetDisplay(BRAKE_DISP_HOOK);
  */
 typedef void (*brake_draw_fn)(void);
+
+#if BRAKE_ENABLE
 
 /* 初始化（清零状态、同步 dbg）。在 App_Init 里调，LedMatrix_Init 之后。 */
 void Brake_Init(void);
@@ -144,5 +165,30 @@ uint8_t Brake_SetMode(uint8_t mode);        /* brkmode    0 幅值(默认) / 1 �
 uint8_t Brake_SetDThr(uint16_t mgps);       /* brkdthr    变化率阈值 mg/s（200~20000）*/
 uint8_t Brake_SetHoldMs(uint16_t ms);       /* brkhold    边沿触发后保持 ms（200~5000）*/
 void    Brake_SetDisplayHook(brake_draw_fn fn);
+
+#else /* BRAKE_ENABLE == 0：模块被编译掉，给一组空实现 */
+
+/* 用 static inline 而不是宏：签名和真实版本完全一致，
+ * 参数类型/返回值写错时编译器照样报错，不会像宏那样静默通过。 */
+static inline void Brake_Init(void) { }
+static inline void Brake_Tick(const app_in_t *in) { (void) in; }
+static inline void Brake_NotifySceneChanged(void) { }
+static inline uint8_t Brake_IsActive(void) { return 0u; }
+
+static inline void Brake_SetEnabled(uint8_t on) { (void) on; }
+static inline void Brake_SetForced(uint8_t on) { (void) on; }
+static inline void Brake_SetAxis(uint8_t axis) { (void) axis; }
+static inline void Brake_SetSign(int8_t sign) { (void) sign; }
+static inline void Brake_SetDisplayHook(brake_draw_fn fn) { (void) fn; }
+
+/* 返回 0 = 参数被拒（app.c 会置 dbg.cmd.result = 2）。
+ * 模块没编进来时，这些命令本来就不该有作用，报失败比静默吞掉更好排查。 */
+static inline uint8_t Brake_SetThreshold(uint16_t mg) { (void) mg; return 0u; }
+static inline uint8_t Brake_SetDisplay(uint8_t id) { (void) id; return 0u; }
+static inline uint8_t Brake_SetMode(uint8_t mode) { (void) mode; return 0u; }
+static inline uint8_t Brake_SetDThr(uint16_t mgps) { (void) mgps; return 0u; }
+static inline uint8_t Brake_SetHoldMs(uint16_t ms) { (void) ms; return 0u; }
+
+#endif /* BRAKE_ENABLE */
 
 #endif /* __BRAKE_H */

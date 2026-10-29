@@ -13,6 +13,10 @@
 #include "led_matrix.h"
 #include "ht16d33a.h"
 
+/* 总开关在 brake.h 里（BRAKE_ENABLE）。为 0 时本文件整体不参与编译，
+ * 头文件会提供同名空实现，调用方无需改动。 */
+#if BRAKE_ENABLE
+
 /* ==================== 参数 ==================== */
 
 /* 低通系数。46 Hz 下 τ ≈ 1/(0.25×46) ≈ 87 ms：
@@ -642,3 +646,5 @@ void Brake_SetDisplayHook(brake_draw_fn fn)
 {
     s_hook = fn;
 }
+
+#endif /* BRAKE_ENABLE */
