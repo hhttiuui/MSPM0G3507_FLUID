@@ -1,0 +1,2105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>15×16 LED 图像转换</title>
+<style>
+  :root{
+    --bg:#f7f6f2; --panel:#fff; --line:#e2e0d8; --text:#22221f;
+    --muted:#6b6a63; --accent:#185FA5; --accent-soft:#e6f1fb; --ok:#1d9e75;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  }
+  header{
+    padding:18px 24px 10px; border-bottom:1px solid var(--line);
+    background:var(--panel);
+  }
+  header h1{margin:0 0 4px; font-size:17px; font-weight:500}
+  header p{margin:0; color:var(--muted); font-size:13px}
+  main{
+    display:grid; grid-template-columns:minmax(320px,1fr) auto;
+    gap:16px; padding:16px 24px; align-items:start;
+  }
+  .panel{
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; padding:16px;
+  }
+  #drop{
+    border:2px dashed var(--line); border-radius:10px;
+    padding:26px 16px; text-align:center; color:var(--muted);
+    cursor:pointer; transition:.15s; font-size:13px;
+  }
+  #drop:hover,#drop.over{border-color:var(--accent); background:var(--accent-soft); color:var(--accent)}
+  .row{display:flex; align-items:center; gap:10px; margin:12px 0 0}
+  .row label{flex:0 0 84px; color:var(--muted); font-size:13px}
+  .row input[type=range]{flex:1}
+  .row .val{flex:0 0 40px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--muted)}
+  .row button.btn{padding:6px 14px; border:1px solid var(--line); border-radius:7px; background:#fff;
+    font:inherit; font-size:13px; cursor:pointer; white-space:nowrap}
+  .row button.btn:hover{border-color:var(--accent); color:var(--accent)}
+  /* 短选项不再撑满整行：下拉框 / 分段控件按内容宽度显示 */
+  .row select{flex:0 1 auto; max-width:100%}
+  .row .seg{flex:0 1 auto}
+  .row .seg button{flex:1 1 auto}
+  #srcSeg{flex:1 1 auto}          /* 「来源」是主切换，保留整行 */
+  #srcSeg button{flex:1 1 0}
+  /* 两个短行并排：各占一半，窗口窄了自动换行 */
+  .pair{display:flex; gap:10px; flex-wrap:wrap}
+  .pair>.row{flex:1 1 150px; margin-top:12px}
+  select{
+    flex:1; padding:5px 8px; border:1px solid var(--line); border-radius:6px;
+    background:#fff; color:var(--text); font:inherit; font-size:13px;
+  }
+  input[type=text]{
+    flex:1; padding:6px 9px; border:1px solid var(--line); border-radius:6px;
+    background:#fff; color:var(--text); font:inherit; font-size:14px;
+  }
+  input[type=text]:focus{outline:2px solid var(--accent-soft); border-color:var(--accent)}
+  .seg{display:flex; gap:0; flex:1; min-width:0; border:1px solid var(--line); border-radius:7px; overflow:hidden}
+  .seg button{
+    flex:1; padding:7px 10px; border:0; background:#fff; color:var(--muted);
+    font:inherit; font-size:13px; cursor:pointer; white-space:nowrap;
+  }
+  .seg button.on{background:var(--accent); color:#fff}
+  .hint{color:var(--muted); font-size:12px; margin-top:8px; line-height:1.5}
+
+  /* .row 自带 display:flex，会盖掉 UA 的 [hidden]{display:none} —— 必须显式压回来，
+     否则 JS 里设的 rowXxx.hidden 完全不起作用（这个坑很隐蔽：属性是 true，但照样显示） */
+  [hidden]{display:none !important}
+
+  /* ---------- 手绘编辑器 ---------- */
+  #pad{
+    width:360px; height:384px; cursor:crosshair;
+    touch-action:none; border:1px solid var(--line); border-radius:6px;
+  }
+  .tools{display:flex; gap:6px; flex-wrap:wrap; margin-top:10px}
+  .tools button{
+    padding:5px 10px; border:1px solid var(--line); border-radius:6px;
+    background:#fff; color:var(--muted); font:inherit; font-size:12px; cursor:pointer;
+  }
+  .tools button:hover{border-color:var(--accent); color:var(--accent)}
+  .tools button.on{background:var(--accent); border-color:var(--accent); color:#fff}
+  .tools button:disabled{opacity:.35; cursor:not-allowed; border-color:var(--line); color:var(--muted)}
+  canvas{
+    display:block; border-radius:8px; background:#0b0705;
+    width:360px; height:384px; image-rendering:pixelated;
+  }
+  .stats{
+    display:flex; gap:14px; margin-top:12px; font-size:12px; color:var(--muted);
+    font-variant-numeric:tabular-nums;
+  }
+  .stats b{color:var(--text); font-weight:500}
+  /* 左栏底部（原页面最下方的发送区，挪进来跟着设置一起走） */
+  .snd{margin-top:16px; padding-top:12px; border-top:1px solid var(--line)}
+  .snd.topless{margin-top:0; padding-top:0; border-top:0}
+  .snd .hd{font-size:13px; color:var(--muted)}
+  .snd .line{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px}
+  .snd .line>span{color:var(--muted); font-size:12px; white-space:nowrap}
+  .snd .line>label{display:flex; gap:6px; align-items:center; font-size:13px; color:var(--muted); white-space:nowrap}
+  .snd select{flex:0 0 auto; font:inherit; font-size:13px; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:#fff}
+  .snd input[type=text]{flex:1; min-width:110px; font:inherit; font-size:13px; padding:6px 8px;
+    border:1px solid var(--line); border-radius:6px}
+  .snd button{padding:6px 12px; border:1px solid var(--line); border-radius:7px; background:#fff;
+    font:inherit; font-size:13px; cursor:pointer; white-space:nowrap}
+  .snd button:hover{border-color:var(--accent); color:var(--accent)}
+  .snd button.pri{background:var(--accent); border-color:var(--accent); color:#fff}
+  .snd button.pri:hover{color:#fff; opacity:.88}
+  /* ---------- 文字预设列表 ---------- */
+  .tplist{margin-top:8px; display:flex; flex-direction:column; gap:6px}
+  .tpitem{display:flex; align-items:center; gap:8px; font-size:12px; padding:5px 8px;
+    border:1px solid var(--line); border-radius:6px; background:#fff}
+  .tpno{flex:0 0 20px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .tptext{flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .tppar{flex:0 0 auto; color:var(--muted)}
+  .tpitem button{padding:3px 9px; border:1px solid var(--line); border-radius:5px;
+    background:#fff; font:inherit; font-size:12px; cursor:pointer}
+  .tpitem button:hover{border-color:var(--accent); color:var(--accent)}
+  .tphint{color:var(--muted); font-size:12px}
+  .out{padding:0 24px 28px}
+  .out h2{font-size:14px; font-weight:500; margin:16px 0 6px}
+  .out .bar{display:flex; gap:8px; align-items:center; margin-bottom:6px}
+  .out .bar span{color:var(--muted); font-size:12px}
+  .out button{
+    padding:5px 12px; border:1px solid var(--line); border-radius:6px;
+    background:#fff; color:var(--text); font:inherit; font-size:12px; cursor:pointer;
+  }
+  .out button:hover{border-color:var(--accent); color:var(--accent)}
+  textarea{
+    width:100%; min-height:76px; resize:vertical; padding:10px;
+    border:1px solid var(--line); border-radius:8px; background:#fbfaf7;
+    font:12px/1.7 ui-monospace,Consolas,"Courier New",monospace;
+    color:var(--text); word-break:break-all;
+  }
+  code{background:#f1efe8; padding:1px 4px; border-radius:4px; font-size:12px}
+  .fmt{font-size:12px; color:var(--muted); line-height:1.9}
+  .fmt table{border-collapse:collapse; margin:6px 0}
+  .fmt td{padding:2px 12px 2px 0; vertical-align:top}
+  .fmt td:first-child{color:var(--text); font-family:ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>15×16 LED 图像转换</h1>
+  <p>拖一张图进来，调参数，右边看到点阵实际效果，下面拿到带帧头的字节流。<br>
+     预览按 <b style="color:#c2402a">红色 LED</b> 显示：黑 = 灭，最亮的红 = 255。</p>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="row" style="margin-top:0">
+      <label>来源</label>
+      <div class="seg" id="srcSeg">
+        <button data-src="image">图片</button>
+        <button data-src="text">文字</button>
+        <button data-src="draw">手绘</button>
+        <button data-src="font">内置字库</button>
+      </div>
+    </div>
+
+    <div id="grpImage" style="margin-top:12px">
+      <div id="drop">拖图片到这里，或点击选择文件</div>
+      <input type="file" id="file" accept="image/*" hidden>
+    </div>
+
+    <div id="grpText" style="margin-top:12px">
+      <div class="row" style="margin-top:0">
+        <label>文字</label>
+        <input type="text" id="txt" value="你" maxlength="24" spellcheck="false">
+      </div>
+      <div class="row">
+        <label>字号</label>
+        <input type="range" id="fsz" min="4" max="40" value="14">
+        <span class="val" id="fszV">14</span>
+      </div>
+      <div class="row">
+        <label>字间距</label>
+        <input type="range" id="spc" min="-4" max="8" value="0">
+        <span class="val" id="spcV">0</span>
+      </div>
+      <div class="row">
+        <label>字体</label>
+        <select id="fam">
+          <option value="&quot;Microsoft YaHei&quot;,sans-serif">微软雅黑</option>
+          <option value="SimSun,serif">宋体</option>
+          <option value="SimHei,sans-serif">黑体</option>
+          <option value="&quot;Segoe UI&quot;,system-ui,sans-serif">Segoe UI</option>
+          <option value="Consolas,monospace">Consolas（等宽）</option>
+        </select>
+      </div>
+      <div class="pair">
+      <div class="row">
+        <label>粗体</label>
+        <select id="bold">
+          <option value="0">否</option>
+          <option value="1">是</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>滚动</label>
+        <select id="scr">
+          <option value="0">关（静态一屏）</option>
+          <option value="1">开（横向滑动）</option>
+        </select>
+      </div>
+      </div>
+      <div class="pair">
+      <div class="row" id="rowStep" hidden>
+        <label>步进</label>
+        <input type="range" id="stp" min="1" max="4" value="1">
+        <span class="val" id="stpV">1</span>
+      </div>
+      <div class="row" id="rowOut" hidden>
+        <label>输出</label>
+        <select id="out">
+          <option value="frames">逐帧（每行一帧）</option>
+          <option value="strip">条带（整条发给 MCU 自己滚）</option>
+        </select>
+      </div>
+      </div>
+      <div class="hint">15 列宽最多 3 个 5×7 字母，或 1 个汉字。字太多就减小字号。<br>
+        <b>字号超过 16 就是「放大裁切」</b> —— 字会比屏幕大，只看到中间一块，
+        适合做局部特写；配合「偏移 X/Y」挪到想看的位置。<br>
+        开滚动后「偏移 X」失效（滚动本身就是横向偏移），改「字间距」调松紧。</div>
+    </div>
+
+    <div id="grpDraw" style="margin-top:12px" hidden>
+      <canvas id="pad" width="360" height="384"></canvas>
+
+      <div class="tools" id="toolSeg">
+        <button data-tool="pen" class="on">画笔</button>
+        <button data-tool="eraser">橡皮</button>
+        <button data-tool="line">直线</button>
+        <button data-tool="rect">矩形</button>
+        <button data-tool="fill">填充</button>
+      </div>
+
+      <div class="row" id="rowPen">
+        <label>笔刷亮度</label>
+        <input type="range" id="pen" min="1" max="255" value="255">
+        <span class="val" id="penV">255</span>
+      </div>
+
+      <div class="tools">
+        <button id="undo">撤销</button>
+        <button id="redo">重做</button>
+        <button id="padClr">清空</button>
+        <button id="padInv">反色</button>
+        <button id="padImpTxt">导入文字</button>
+        <button id="padImpImg">导入图片</button>
+      </div>
+
+      <div class="hint">
+        在格子上按住拖动即可画。<b>首次进入会自动导入当前文字</b>，可以直接改笔画。<br>
+        「偏移 X/Y」会整体平移画布内容，越界部分暂时看不到（<b>改回来会恢复</b>）。<br>
+        1 bit 模式下笔刷固定满亮（走阈值变亮/灭）；8 bit 模式下画布里的值
+        <b>就是最终 DDRAM 值</b>，不再叠亮度/对比度/gamma。
+      </div>
+    </div>
+
+    <!-- ===== 来源 = 内置字库：这一栏不发位图，只发文本命令 ===== -->
+    <div id="grpFont" style="margin-top:12px" hidden>
+      <div class="snd topless">
+        <div class="line">
+          <input id="serText" type="text" value="你好世界" spellcheck="false">
+          <button id="tpSaveBtn">存为预设</button>
+        </div>
+
+        <div class="line">
+          <label><input id="serAutoRot" type="checkbox" checked> 自动跟随重力</label>
+          <select id="serRot" disabled>
+            <option value="0">0° 正放</option>
+            <option value="1">顺时针 90°</option>
+            <option value="2">180°</option>
+            <option value="3">逆时针 90°</option>
+          </select>
+          <span id="serTextInfo">0 / 32 字节</span>
+        </div>
+
+        <div class="line">
+          <label>步长
+            <select id="serTStep">
+              <option value="page" selected>跟随页面</option>
+              <option value="1">1 px</option>
+              <option value="2">2 px</option>
+              <option value="4">4 px</option>
+              <option value="8">8 px</option>
+            </select>
+          </label>
+          <label>帧间隔
+            <select id="serTMs">
+              <option value="10">10 ms</option>
+              <option value="20">20 ms</option>
+              <option value="40" selected>40 ms</option>
+              <option value="80">80 ms</option>
+              <option value="160">160 ms</option>
+            </select>
+          </label>
+          <label>亮度
+            <select id="serTLev">
+              <option value="64">64</option>
+              <option value="128">128</option>
+              <option value="192">192</option>
+              <option value="255" selected>255</option>
+            </select>
+          </label>
+          <label>反色
+            <select id="serTInv">
+              <option value="0" selected>否</option>
+              <option value="1">是（亮底黑字）</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- 文字预设：存进板子 Flash，断电保留，按键可切。
+             字库这一栏的「发送到板子」= 把整份列表同步下去。 -->
+        <div class="tphint" id="tpInfo" style="margin-top:10px">0 条</div>
+        <div id="tpList" class="tplist"></div>
+        <div class="hint">
+          只发文本命令（几十字节）：<code>mode 2</code> → <code>torient</code> →
+          <code>tstep</code> → <code>tms</code> → <code>tlev</code> → <code>text …</code>，
+          画面由 MCU 用自己的 12×12 字库现场渲染并滚动，所以能跟着重力转 90°/180°。<br>
+          字库固定 12×12，最多 32 字节 UTF-8（约 10 个汉字）。<br>
+          ⚠ 自动朝向依赖 IMU：<code>dbg.fluid.imu_use = 1</code> 才会跟随重力，
+          否则只能用上面的手动朝向。<br>
+          这一栏不发位图，所以<b>位深 / 阈值 / 抖动 / 位图相关设置在这里不显示、也不下发</b>。
+        </div>
+      </div>
+    </div>
+
+    <!-- 偏移放在顶层：文字和手绘都要用。放在 grpText 里的话，
+         切到手绘时整块被 hidden，滑块就跟着一起消失了（踩过一次） -->
+    <div class="row" id="rowOfx">
+      <label>偏移 X</label>
+      <input type="range" id="ofx" min="-8" max="8" value="0">
+      <span class="val" id="ofxV">0</span>
+    </div>
+
+    <div class="row" id="rowOfy">
+      <label>偏移 Y</label>
+      <input type="range" id="ofy" min="-8" max="8" value="0">
+      <span class="val" id="ofyV">0</span>
+    </div>
+
+    <div class="row" id="rowBpp">
+      <label>位深</label>
+      <div class="seg" id="bppSeg">
+        <button data-bpp="1">1 bit（30 B）</button>
+        <button data-bpp="8">8 bit（240 B）</button>
+      </div>
+    </div>
+
+    <div class="row" id="rowRot">
+      <label>旋转</label>
+      <select id="rot">
+        <option value="0">0°</option>
+        <option value="90">顺时针 90°</option>
+        <option value="180">180°</option>
+        <option value="270">顺时针 270°</option>
+      </select>
+    </div>
+
+    <div class="row" id="rowFit">
+      <label>缩放</label>
+      <select id="fit">
+        <option value="cover">裁切填满（cover）</option>
+        <option value="contain">完整放入（contain）</option>
+        <option value="stretch">拉伸变形（stretch）</option>
+      </select>
+    </div>
+
+    <div class="row" id="rowInv">
+      <label>反色</label>
+      <select id="invert">
+        <option value="0">否</option>
+        <option value="1">是</option>
+      </select>
+    </div>
+
+    <div id="grp1">
+      <div class="row">
+        <label>阈值</label>
+        <input type="range" id="thr" min="0" max="255" value="128">
+        <span class="val" id="thrV">128</span>
+      </div>
+      <div class="row">
+        <label>抖动</label>
+        <select id="dither">
+          <option value="none">不抖动（硬边）</option>
+          <option value="fs">Floyd–Steinberg（细节好）</option>
+          <option value="bayer">Bayer 4×4（有规律，适合动画）</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="grp8" hidden>
+      <div class="row">
+        <label>亮度</label>
+        <input type="range" id="bri" min="-100" max="100" value="0">
+        <span class="val" id="briV">0</span>
+      </div>
+      <div class="row">
+        <label>对比度</label>
+        <input type="range" id="con" min="-100" max="100" value="0">
+        <span class="val" id="conV">0</span>
+      </div>
+      <div class="row">
+        <label>gamma</label>
+        <input type="range" id="gam" min="50" max="300" value="100">
+        <span class="val" id="gamV">1.00</span>
+      </div>
+    </div>
+
+    <div class="hint" id="tip">1 bit：每格只有亮/灭，30 字节一张，图标和像素画更清楚。</div>
+
+
+  </section>
+
+  <section class="panel">
+    <canvas id="preview" width="360" height="384"></canvas>
+    <div class="stats">
+      <div>点亮 <b id="sOn">0</b> / 240</div>
+      <div>负载 <b id="sLen">0</b> B</div>
+      <div>帧总长 <b id="sAll">0</b> B</div>
+      <div>帧 <b id="sFrm">—</b></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="dl" style="padding:7px 14px;border:1px solid var(--line);border-radius:7px;background:#fff;font:inherit;font-size:13px;cursor:pointer">下载预览 PNG（4×）</button>
+    </div>
+
+    <!-- 发送区：四个来源共用。图片/文字/手绘发整帧位图，内置字库发文本命令 -->
+    <div class="snd">
+      <div class="line">
+        <button id="serConn">连接串口</button>
+        <span id="serInfo">未连接</span>
+      </div>
+      <div class="line">
+        <button id="serSend" class="pri">发送到板子</button>
+        <span id="sndInfo">—</span>
+      </div>
+      <!-- 存 Flash：四个来源共用这一行。能力不一致时置灰 + 写明原因，
+           不再整行隐藏 —— 隐藏会让人以为压根没这个功能（以前只有文字条带能看见）。 -->
+      <div class="line" id="rowFlash">
+        <label for="flashSave">存 Flash</label>
+        <select id="flashSave">
+          <option value="0" selected>否（只在 RAM，掉电丢）</option>
+          <option value="1">是（掉电保留，上电自动恢复）</option>
+        </select>
+        <span id="flashWhy">—</span>
+      </div>
+      <!-- 图片/动图存到板子 Flash 的槽位（多帧 + CRC 校验）：选槽 → 上传 → 按键菜单里播放 -->
+      <div class="line" id="rowImgSlot">
+        <label for="imgSlot">存到槽位</label>
+        <select id="imgSlot">
+          <option value="0" selected>槽 0（16 KB）</option>
+          <option value="1">槽 1（8 KB）</option>
+        </select>
+        <select id="imgBpp">
+          <option value="4" selected>4bit（容量翻倍）</option>
+          <option value="8">8bit（更细腻）</option>
+        </select>
+        <button id="imgUp">上传到板子</button>
+        <span id="imgInfo">—</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<section class="out">
+  <h2>帧数据（含 6 字节头）</h2>
+  <div class="bar"><span id="frameInfo">—</span><button data-copy="hexFrame">复制</button></div>
+  <textarea id="hexFrame" readonly placeholder="拖入图片后生成"></textarea>
+
+  <div id="rowBlock">
+  <h2>逐行（给 <code>row</code> 命令用）</h2>
+  <div class="bar"><span id="rowInfo">—</span><button data-copy="hexRows">复制</button></div>
+  <textarea id="hexRows" readonly placeholder="拖入图片后生成"></textarea>
+  </div>
+
+  
+
+  <h2>帧格式</h2>
+  <div class="fmt">
+    <table>
+      <tr><td>[0]</td><td><code>0xA5</code> magic</td></tr>
+      <tr><td>[1]</td><td><code>0x01</code> 版本</td></tr>
+      <tr><td>[2]</td><td>flags —— <b>bit[1:0] 位深：0 = 8bit，1 = 1bit</b>（就是这里的开关）；
+        <b>bit2 = 1 表示条带</b>（cols 是整条宽度，MCU 自己滚动）</td></tr>
+      <tr><td>[3]</td><td>行数 16</td></tr>
+      <tr><td>[4]</td><td>列数：一屏 = 15；条带 = 1~120</td></tr>
+      <tr><td>[5]</td><td>负载字节数：一屏 8bit = 240 / 1bit = 32；条带 1bit = ceil(cols/8)×16</td></tr>
+      <tr><td>[6..]</td><td>负载</td></tr>
+    </table>
+    <b>8 bit 负载</b>：240 字节，行优先，<code>index = r×15 + x</code>，值 0~255 是亮度。<br>
+    <b>1 bit 负载</b>：32 字节 = 16 行 × 2 字节。每行 <code>byte0</code> 装 x1~x8（bit7 = x1），
+    <code>byte1</code> 装 x9~x15（bit7 = x9，bit0 恒 0）。
+    按行对齐而不是连续打包，是为了和芯片二进制模式的「每扫描通道 2 字节」对齐，固件解码不用移位跨字节。
+  </div>
+</section>
+
+<script>
+(function(){
+  'use strict';
+
+  var W = 15, H = 16;          // app 网格：15 列 × 16 行
+  var CELL = 24;               // 预览每格像素
+
+  // 灯珠颜色。换灯珠只改这一行：红 [255,26,13] / 绿 [30,255,60] / 白 [255,255,255]
+  // 预览按"亮度 × 灯珠色"算，所以 0 一定是灭、255 一定是满亮。
+  var LED_RGB = [255, 26, 13];
+  var PANEL_BG = '#0b0705';    // 面板底色（暗红偏黑）
+
+  function ledColor(v){
+    var k = v / 255;
+    return 'rgb(' + Math.round(LED_RGB[0]*k) + ',' +
+                    Math.round(LED_RGB[1]*k) + ',' +
+                    Math.round(LED_RGB[2]*k) + ')';
+  }
+
+  var st = {
+    src: 'text',                 // 'image' | 'text' | 'draw'
+    img: null,
+    text: '你',
+    pen: 255,                    // 手绘笔刷亮度（8bit 生效；1bit 固定 255）
+    tool: 'pen',                 // 手绘工具：pen/eraser/line/rect/fill
+    cells: 14,                   // 字号，单位是"格"（1 格 = 1 个 LED）
+    space: 0,                    // 字间距，单位也是格（可为负 = 收紧）
+    fam: '"Microsoft YaHei",sans-serif',
+    bold: false,
+    ofx: 0,                      // 偏移，单位也是格
+    ofy: 0,
+    scroll: false,               // 文字横向滑动
+    step: 1,                     // 每帧移动几格
+    stripOut: false,             // true = 发条带（MCU 自己滚），false = 发逐帧
+    bpp: 1,
+    rot: 0,
+    fit: 'cover',
+    invert: 0,
+    thr: 128,
+    dither: 'none',
+    bri: 0,
+    con: 0,
+    gam: 100
+  };
+
+  var SUPER = 8;                 // 文字超采样倍数：先画大再缩，才有抗锯齿
+
+  var $ = function(id){ return document.getElementById(id); };
+  var cv = $('preview'), ctx = cv.getContext('2d');
+
+  // ==================== 手绘编辑器 ====================
+  //
+  // pad[] 存每格的**目标亮度** 0~255，和 8bit 负载一一对应。
+  // 这样画布和输出是同一份数据，不存在"预览一种、发出去另一种"的问题。
+  //
+  // 为什么需要它：15 像素下的汉字（尤其"繁""赢"这类多笔画字）用 TTF 缩放
+  // 怎么调阈值都糊，但手工补几个点就能认。这是取模工具的通用做法。
+  var pad = new Uint8Array(W*H);
+  var padUndo = [], padRedo = [];
+  var padSeeded = false;              // 首次进手绘时自动导入当前文字/图片
+  var PC = 24;                        // 编辑器每格像素：15×24=360、16×24=384，和右侧预览同尺寸
+  var padCv = $('pad'), pctx = padCv.getContext('2d');
+
+  function padSnapshot(){
+    padUndo.push(pad.slice());
+    if (padUndo.length > 60) padUndo.shift();   // 60 步够用，再多白占内存
+    padRedo.length = 0;
+  }
+
+  // ---- 画布平移（偏移 X / 偏移 Y）----
+  //
+  // 屏幕格 → 画布格的映射：屏幕 (x,y) 显示的是画布 (x-ofx, y-ofy)。
+  // 三个地方必须用同一个映射，否则"点的地方"和"亮的地方"会错开：
+  //   padRender 画的时候、padCell 换算鼠标的时候、padGray 送去编码的时候。
+  //
+  // 平移是**非破坏性**的：pad[] 本身没动，把偏移调回来内容就回来了，
+  // 越界的那部分只是暂时看不见（也发不出去）。
+  function padIndexAt(x, y){
+    var sx = x - st.ofx, sy = y - st.ofy;
+
+    if (sx < 0 || sx >= W || sy < 0 || sy >= H) return -1;
+    return sy*W + sx;
+  }
+
+  function padRender(){
+    pctx.fillStyle = PANEL_BG;
+    pctx.fillRect(0, 0, padCv.width, padCv.height);
+
+    for (var y = 0; y < H; y++){
+      for (var x = 0; x < W; x++){
+        var i = padIndexAt(x, y);
+
+        pctx.fillStyle = ledColor((i < 0) ? 0 : pad[i]);
+        pctx.fillRect(x*PC, y*PC, PC-1, PC-1);
+      }
+    }
+    $('undo').disabled = (padUndo.length === 0);
+    $('redo').disabled = (padRedo.length === 0);
+  }
+
+  function padGray(){
+    var out = new Float32Array(W*H);
+
+    for (var y = 0; y < H; y++){
+      for (var x = 0; x < W; x++){
+        var i = padIndexAt(x, y);
+
+        out[y*W + x] = (i < 0) ? 0 : pad[i];
+      }
+    }
+    return out;
+  }
+
+  function penLevel(){
+    return (st.bpp === 1) ? 255 : st.pen;   // 1bit 下笔刷恒为满亮
+  }
+
+  function padSet(x, y, v){
+    if (x < 0 || x >= W || y < 0 || y >= H) return;
+    pad[y*W + x] = v;
+  }
+
+  // Bresenham：快速拖动时指针事件会跳格，不补线就会断断续续
+  function padLine(x0, y0, x1, y1, v){
+    var dx = Math.abs(x1-x0), sx = (x0 < x1) ? 1 : -1;
+    var dy = -Math.abs(y1-y0), sy = (y0 < y1) ? 1 : -1;
+    var err = dx + dy;
+
+    for (;;){
+      padSet(x0, y0, v);
+      if (x0 === x1 && y0 === y1) break;
+      var e2 = 2*err;
+      if (e2 >= dy){ err += dy; x0 += sx; }
+      if (e2 <= dx){ err += dx; y0 += sy; }
+    }
+  }
+
+  // 只画边框（像素画里实心矩形很少用，实心直接用填充工具）
+  function padRect(x0, y0, x1, y1, v){
+    var xa = Math.min(x0,x1), xb = Math.max(x0,x1);
+    var ya = Math.min(y0,y1), yb = Math.max(y0,y1);
+
+    for (var x = xa; x <= xb; x++){ padSet(x, ya, v); padSet(x, yb, v); }
+    for (var y = ya; y <= yb; y++){ padSet(xa, y, v); padSet(xb, y, v); }
+  }
+
+  function padFill(x, y, v){
+    if (x < 0 || x >= W || y < 0 || y >= H) return;
+
+    var from = pad[y*W + x];
+    if (from === v) return;
+
+    var stack = [[x, y]];
+    while (stack.length){
+      var p = stack.pop(), cx = p[0], cy = p[1];
+      if (cx < 0 || cx >= W || cy < 0 || cy >= H) continue;
+      if (pad[cy*W + cx] !== from) continue;
+      pad[cy*W + cx] = v;
+      stack.push([cx+1, cy], [cx-1, cy], [cx, cy+1], [cx, cy-1]);
+    }
+  }
+
+  var padDown = false, padBase = null, padX0 = 0, padY0 = 0;
+
+  // 用 getBoundingClientRect 换算，这样 CSS 缩放（含高分屏）都不会错格
+  // 返回的是**画布坐标**（已经减掉平移量），所以下笔位置和看到的位置一致
+  function padCell(ev){
+    var r = padCv.getBoundingClientRect();
+    var x = Math.floor((ev.clientX - r.left) / (r.width  / W));
+    var y = Math.floor((ev.clientY - r.top ) / (r.height / H));
+
+    x = Math.max(0, Math.min(W-1, x));
+    y = Math.max(0, Math.min(H-1, y));
+
+    return [x - st.ofx, y - st.ofy];
+  }
+
+  padCv.addEventListener('pointerdown', function(ev){
+    ev.preventDefault();
+    try { padCv.setPointerCapture(ev.pointerId); } catch (e){}
+
+    var c = padCell(ev);
+    padDown = true;
+    padX0 = c[0]; padY0 = c[1];
+    padSnapshot();
+    padBase = pad.slice();            // 直线/矩形每帧从这里重画，才能"拖动预览"
+
+    if (st.tool === 'fill'){
+      padFill(c[0], c[1], penLevel());
+    } else if (st.tool === 'line' || st.tool === 'rect'){
+      padSet(c[0], c[1], penLevel());  // 单击也要留下一个点
+    } else {
+      padSet(c[0], c[1], (st.tool === 'eraser') ? 0 : penLevel());
+    }
+
+    padRender(); update();
+  });
+
+  padCv.addEventListener('pointermove', function(ev){
+    if (!padDown) return;
+    var c = padCell(ev);
+
+    if (st.tool === 'line'){
+      pad.set(padBase);
+      padLine(padX0, padY0, c[0], c[1], penLevel());
+    } else if (st.tool === 'rect'){
+      pad.set(padBase);
+      padRect(padX0, padY0, c[0], c[1], penLevel());
+    } else if (st.tool === 'pen' || st.tool === 'eraser'){
+      padLine(padX0, padY0, c[0], c[1], (st.tool === 'eraser') ? 0 : penLevel());
+      padX0 = c[0]; padY0 = c[1];
+    }
+
+    padRender(); update();
+  });
+
+  function padEnd(ev){
+    if (!padDown) return;
+    padDown = false;
+    padBase = null;
+    try { padCv.releasePointerCapture(ev.pointerId); } catch (e){}
+    padRender(); update();
+  }
+  padCv.addEventListener('pointerup', padEnd);
+  padCv.addEventListener('pointercancel', padEnd);
+
+  $('toolSeg').addEventListener('click', function(e){
+    var b = e.target.closest('button');
+    if (!b) return;
+    st.tool = b.dataset.tool;
+    Array.prototype.forEach.call($('toolSeg').children, function(x){
+      x.classList.toggle('on', x.dataset.tool === st.tool);
+    });
+  });
+
+  $('undo').addEventListener('click', function(){
+    if (!padUndo.length) return;
+    padRedo.push(pad.slice());
+    pad = padUndo.pop();
+    padRender(); update();
+  });
+
+  $('redo').addEventListener('click', function(){
+    if (!padRedo.length) return;
+    padUndo.push(pad.slice());
+    pad = padRedo.pop();
+    padRender(); update();
+  });
+
+  $('padClr').addEventListener('click', function(){
+    padSnapshot(); pad.fill(0); padRender(); update();
+  });
+
+  $('padInv').addEventListener('click', function(){
+    padSnapshot();
+    for (var i = 0; i < pad.length; i++) pad[i] = 255 - pad[i];
+    padRender(); update();
+  });
+
+  // 把文字/图片的渲染结果搬进画布，之后手工修笔画。
+  // 传的是明确的 base，不依赖 st.src —— 否则在 draw 模式下会自己导自己。
+  function importIntoPad(base){
+    if (!base) return;
+
+    /* 文字的 ofx/ofy 是画字时烘进画布的，这里先清零再采样，
+     * 否则"偏移 2"会让导入的内容被平移两次（一次在文字渲染，一次在画布平移）。 */
+    var ox = st.ofx, oy = st.ofy;
+    st.ofx = 0; st.ofy = 0;
+    var g = sampleGray(base);
+    st.ofx = ox; st.ofy = oy;
+
+    padSnapshot();
+    for (var i = 0; i < W*H; i++){
+      pad[i] = Math.max(0, Math.min(255, Math.round(g[i])));
+    }
+    padRender(); update();
+  }
+
+  $('padImpTxt').addEventListener('click', function(){ importIntoPad(textCanvas()); });
+  $('padImpImg').addEventListener('click', function(){ importIntoPad(st.img); });
+
+
+  // ---------- 取像素：旋转 → 缩放 → 15×16 灰度 ----------
+  function drawRotated(img, rot){
+    var r = ((rot % 360) + 360) % 360;
+    var swap = (r === 90 || r === 270);
+    var w = swap ? img.height : img.width;
+    var h = swap ? img.width  : img.height;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var x = c.getContext('2d');
+    x.translate(w/2, h/2);
+    x.rotate(r * Math.PI / 180);
+    x.drawImage(img, -img.width/2, -img.height/2);
+    return c;
+  }
+
+  // 文字不是直接画在 15×16 上，而是先画到 120×128 再缩下来。
+  // 直接画小字会被浏览器按目标尺寸抗锯齿，笔画全糊；超采样后由下面的
+  // 阈值/gamma 统一决定怎么二值化，效果可控得多。
+  function fontStr(){
+    return (st.bold ? 'bold ' : '') + (st.cells * SUPER) + 'px ' + st.fam;
+  }
+
+  // 逐字排版：整串 fillText 没法加字间距，所以一个字一个字画。
+  // 代价是丢了西文的 kerning —— 15 像素的点阵上看不出来。
+  function runWidth(ctx, text){
+    var w = 0;
+    for (var i = 0; i < text.length; i++){
+      w += ctx.measureText(text[i]).width;
+      if (i < text.length - 1) w += st.space * SUPER;
+    }
+    return w;
+  }
+
+  function drawRun(ctx, text, x0, y){
+    var cx = x0;
+    for (var i = 0; i < text.length; i++){
+      ctx.fillText(text[i], cx, y);
+      cx += ctx.measureText(text[i]).width;
+      if (i < text.length - 1) cx += st.space * SUPER;
+    }
+  }
+
+  function textCanvas(){
+    if (!st.text) return null;
+
+    var c = document.createElement('canvas');
+    c.width  = W * SUPER;
+    c.height = H * SUPER;
+
+    var x = c.getContext('2d');
+    x.fillStyle = '#000';
+    x.fillRect(0, 0, c.width, c.height);
+    x.fillStyle = '#fff';
+    x.textAlign = 'left';
+    x.textBaseline = 'middle';
+    x.font = fontStr();
+
+    var total = runWidth(x, st.text);
+    drawRun(x, st.text,
+            c.width/2 - total/2 + st.ofx * SUPER,
+            c.height/2 + st.ofy * SUPER);
+    return c;
+  }
+
+  // ---- 滚动：整条文字一次画完，之后按窗口逐帧截取 ----
+  // 左右各留一屏空白，文字才是"从右边进来、从左边出去"，而不是凭空出现。
+  var stripCache = null;
+
+  function getStrip(){
+    if (stripCache) return stripCache;
+    if (!st.text) return null;
+
+    var probe = document.createElement('canvas').getContext('2d');
+    probe.font = fontStr();
+    var total = Math.ceil(runWidth(probe, st.text));
+    var pad = W * SUPER;                 // 左右各留**整整一屏**空白
+
+    var c = document.createElement('canvas');
+    c.width  = total + pad * 2;
+    c.height = H * SUPER;
+
+    var x = c.getContext('2d');
+    x.fillStyle = '#000';
+    x.fillRect(0, 0, c.width, c.height);
+    x.fillStyle = '#fff';
+    x.textAlign = 'left';
+    x.textBaseline = 'middle';
+    x.font = fontStr();
+
+    /* ⚠ 这里**不用 st.ofx**：滚动本身就是横向偏移，再加偏移会把文字推进
+     * 左侧留白里 —— 第 0 帧就不再是空白，循环回第 0 帧时看起来就像
+     * "下一个字从屏幕中间瞬间冒出来"。所以滚动模式下 ofx 被忽略（UI 也隐藏）。 */
+    drawRun(x, st.text, pad, c.height/2 + st.ofy * SUPER);
+
+    stripCache = c;
+    return c;
+  }
+
+  // 第 k 帧 = 从条带的第 k×step 格开始，取 15 格宽
+  function scrollWindow(k){
+    var strip = getStrip();
+    if (!strip) return null;
+
+    var c = document.createElement('canvas');
+    c.width  = W * SUPER;
+    c.height = H * SUPER;
+
+    var x = c.getContext('2d');
+    x.fillStyle = '#000';
+    x.fillRect(0, 0, c.width, c.height);
+    x.drawImage(strip, -k * st.step * SUPER, 0);
+    return c;
+  }
+
+  function getSource(){
+    return (st.src === 'text') ? textCanvas() : st.img;
+  }
+
+  // 手绘模式没有"源图像"，画布本身就是源，所以要单独判断
+  function hasSource(){
+    /* 内置字库：点阵在 MCU 的 WQY12 字库里，PC 没有这套数据，这里不预览 */
+    if (st.src === 'font') return false;
+    return (st.src === 'draw') ? true : !!getSource();
+  }
+
+  function currentGray(){
+    return (st.src === 'draw') ? padGray() : sampleGray();
+  }
+
+  function sampleGray(base){
+    var out = new Float32Array(W*H);
+    if (!base) base = getSource();
+    if (!base) return out;
+
+    var src = drawRotated(base, st.rot);
+    var c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    var x = c.getContext('2d');
+    x.imageSmoothingEnabled = true;
+    x.imageSmoothingQuality = 'high';
+    x.fillStyle = '#000';
+    x.fillRect(0,0,W,H);
+
+    var sw = src.width, sh = src.height, dw, dh, dx, dy;
+    if (st.fit === 'stretch'){
+      dw = W; dh = H; dx = 0; dy = 0;
+    } else {
+      var s = (st.fit === 'cover')
+        ? Math.max(W/sw, H/sh)
+        : Math.min(W/sw, H/sh);
+      dw = sw*s; dh = sh*s;
+      dx = (W-dw)/2; dy = (H-dh)/2;
+    }
+    x.drawImage(src, dx, dy, dw, dh);
+
+    var d = x.getImageData(0,0,W,H).data;
+    for (var i = 0; i < W*H; i++){
+      var r = d[i*4], g = d[i*4+1], b = d[i*4+2], a = d[i*4+3]/255;
+      // 透明像素按黑处理（否则会变成白色）
+      var lum = (0.299*r + 0.587*g + 0.114*b) * a;
+      if (st.invert) lum = 255 - lum;
+      out[i] = lum;
+    }
+    return out;
+  }
+
+  // ---------- 8 bit：亮度 / 对比度 / gamma ----------
+  function to8(gray, w, h){
+    w = w || W; h = h || H;
+    var out = new Uint8Array(w*h);
+
+    // 手绘模式下画布里的值就是**最终 DDRAM 值**，不再叠亮度/对比度/gamma。
+    // 否则"笔刷 128"会被 gamma 改成 140，画的和发出去的对不上 ——
+    // 像素编辑器最忌讳这个。对应地，draw 模式下这三组控件是隐藏的。
+    if (st.src === 'draw'){
+      for (var q = 0; q < w*h; q++){
+        out[q] = Math.max(0, Math.min(255, Math.round(gray[q])));
+      }
+      return out;
+    }
+
+    var bri = st.bri * 1.28;                    // -100..100 → -128..128
+    var cf  = (259 * (st.con + 255)) / (255 * (259 - st.con));
+    var gamma = st.gam / 100;                   // 0.50 .. 3.00
+    var lut = new Uint8Array(256);
+    for (var i = 0; i < 256; i++){
+      var v = i + bri;
+      v = cf * (v - 128) + 128;
+      v = Math.max(0, Math.min(255, v));
+      v = 255 * Math.pow(v/255, 1/gamma);
+      lut[i] = Math.max(0, Math.min(255, Math.round(v)));
+    }
+    for (var k = 0; k < w*h; k++){
+      out[k] = lut[Math.max(0, Math.min(255, Math.round(gray[k])))];
+    }
+    return out;
+  }
+
+  // ---------- 1 bit：阈值 + 抖动 ----------
+  var BAYER4 = [
+     0,  8,  2, 10,
+    12,  4, 14,  6,
+     3, 11,  1,  9,
+    15,  7, 13,  5
+  ];
+
+  function to1(gray, w, h){
+    w = w || W; h = h || H;
+    var a = Float32Array.from(gray);
+    var out = new Uint8Array(w*h);
+    var t = st.thr;
+
+    if (st.dither === 'none'){
+      for (var i = 0; i < w*h; i++) out[i] = a[i] > t ? 1 : 0;
+      return out;
+    }
+
+    if (st.dither === 'bayer'){
+      for (var y = 0; y < h; y++){
+        for (var x = 0; x < w; x++){
+          var m = (BAYER4[(y%4)*4 + (x%4)] + 0.5) / 16;   // 0..1
+          out[y*w+x] = a[y*w+x] > 255*m ? 1 : 0;
+        }
+      }
+      return out;
+    }
+
+    // Floyd–Steinberg：误差横向传满整条，所以宽图不会有接缝
+    for (var yy = 0; yy < h; yy++){
+      for (var xx = 0; xx < w; xx++){
+        var i2 = yy*w + xx;
+        var old = a[i2];
+        var nv = old > t ? 255 : 0;
+        out[i2] = nv ? 1 : 0;
+        var err = old - nv;
+        if (xx+1 < w)              a[i2+1]      += err * 7/16;
+        if (yy+1 < h){
+          if (xx > 0)              a[i2+w-1]    += err * 3/16;
+                                   a[i2+w]      += err * 5/16;
+          if (xx+1 < w)            a[i2+w+1]    += err * 1/16;
+        }
+      }
+    }
+    return out;
+  }
+
+  // ---------- 编码 ----------
+  function encode8(vals){
+    var p = new Uint8Array(W*H);
+    for (var i = 0; i < W*H; i++) p[i] = vals[i];
+    return p;
+  }
+
+  function encode1(bits){
+    var p = new Uint8Array(H*2);
+    for (var y = 0; y < H; y++){
+      var b0 = 0, b1 = 0;
+      for (var x = 0; x < W; x++){
+        if (!bits[y*W+x]) continue;
+        if (x < 8) b0 |= (0x80 >> x);
+        else       b1 |= (0x80 >> (x-8));
+      }
+      p[y*2]   = b0;
+      p[y*2+1] = b1;
+    }
+    return p;
+  }
+
+  // 通用帧：cols 可变；flags 的 bit2 = 1 表示这是"条带"而不是"一屏"
+  function frameW(payload, bppCode, cols, isStrip){
+    var f = new Uint8Array(6 + payload.length);
+    f[0] = 0xA5;
+    f[1] = 0x01;
+    f[2] = (bppCode & 0x03) | (isStrip ? 0x04 : 0x00);
+    f[3] = H;
+    f[4] = cols;
+    f[5] = payload.length;
+    f.set(payload, 6);
+    return f;
+  }
+
+  function frame(payload, bppCode){
+    return frameW(payload, bppCode, W, false);
+  }
+
+  // ---- 条带编码：宽度可变，按行对齐（每行 ceil(cols/8) 字节）----
+  function bytesPerRow(cols){ return Math.ceil(cols / 8); }
+
+  function encodeStrip1(bits, cols){
+    var bpr = bytesPerRow(cols);
+    var p = new Uint8Array(H * bpr);
+    for (var y = 0; y < H; y++){
+      for (var x = 0; x < cols; x++){
+        if (!bits[y*cols + x]) continue;
+        p[y*bpr + (x >> 3)] |= (0x80 >> (x & 7));
+      }
+    }
+    return p;
+  }
+
+  // 把整条文字缩成 cols × 16 的灰度，一次算完再二值化 —— 抖动误差可以横向传满整条，
+  // 不会像"逐帧各算各的"那样在帧边界出现接缝。
+  function stripBitmap(){
+    var strip = getStrip();
+    if (!strip) return null;
+
+    var cols = Math.ceil(strip.width / SUPER);
+
+    var c = document.createElement('canvas');
+    c.width = cols; c.height = H;
+    var x = c.getContext('2d');
+    x.imageSmoothingEnabled = true;
+    x.imageSmoothingQuality = 'high';
+    x.fillStyle = '#000';
+    x.fillRect(0, 0, cols, H);
+    x.drawImage(strip, 0, 0, cols, H);
+
+    var d = x.getImageData(0, 0, cols, H).data;
+    var g = new Float32Array(cols * H);
+    for (var i = 0; i < cols*H; i++){
+      var r = d[i*4], gg = d[i*4+1], b = d[i*4+2], a = d[i*4+3]/255;
+      var lum = (0.299*r + 0.587*gg + 0.114*b) * a;
+      if (st.invert) lum = 255 - lum;
+      g[i] = lum;
+    }
+    return { cols: cols, gray: g };
+  }
+
+  function hex(bytes, sep){
+    var s = [];
+    for (var i = 0; i < bytes.length; i++){
+      s.push(('0' + bytes[i].toString(16).toUpperCase()).slice(-2));
+    }
+    return s.join(sep || ' ');
+  }
+
+  // ---------- 渲染 ----------
+  function draw(bits, vals){
+    ctx.fillStyle = PANEL_BG;
+    ctx.fillRect(0,0,cv.width,cv.height);
+
+    for (var y = 0; y < H; y++){
+      for (var x = 0; x < W; x++){
+        var i = y*W + x, g;
+        if (st.bpp === 1){
+          g = bits[i] ? 255 : 18;
+        } else {
+          g = vals[i];              // 0 就是灭，不美化 —— 预览要能看出真实的黑
+        }
+        ctx.fillStyle = ledColor(g);
+        ctx.fillRect(x*CELL, y*CELL, CELL-1, CELL-1);
+      }
+    }
+  }
+
+  // 一帧 = 灰度 → 二值/灰度 → 编码
+  function buildFrame(gray){
+    var bits = null, vals = null, payload, code, on = 0;
+
+    if (st.bpp === 1){
+      bits = to1(gray);
+      payload = encode1(bits);
+      code = 1;
+      for (var i = 0; i < bits.length; i++) on += bits[i];
+    } else {
+      vals = to8(gray);
+      payload = encode8(vals);
+      code = 0;
+      for (var k = 0; k < vals.length; k++) on += (vals[k] > 8 ? 1 : 0);
+    }
+    return { bits: bits, vals: vals, payload: payload, code: code, on: on };
+  }
+
+  var frames = [];        // 静态模式只有 1 帧，滚动模式有 N 帧
+  var curFrame = 0;
+  var timer = null;
+
+  // renderOutput() 算完就记在这里，发送按钮直接发这一个整帧，
+  // 保证"发出去的"和"上面 hex 框里显示的"逐字节一致。
+  var outFrame   = null;  // 可直接发送的整帧（6 B 头 + 负载）
+  var outBlocked = '';    // 非空 = 这一帧固件收不了，附带原因
+  var outDesc    = '—';   // 预览下方那行"将发送什么"
+
+  function drawCurrent(){
+    var f = frames[curFrame];
+    if (f) draw(f.bits, f.vals);
+  }
+
+  function startAnim(){
+    if (timer) return;
+    timer = setInterval(function(){
+      if (frames.length < 2) return;
+      curFrame = (curFrame + 1) % frames.length;
+      drawCurrent();
+      $('sOn').textContent = frames[curFrame].on;
+      $('sFrm').textContent = (curFrame + 1) + '/' + frames.length;
+    }, 50);                                  // 20 fps，和板子上的目标帧率一致
+  }
+
+  function stopAnim(){
+    if (timer){ clearInterval(timer); timer = null; }
+  }
+
+  function update(){
+    stripCache = null;
+
+    if (!hasSource()){
+      stopAnim();
+      frames = [];
+      ctx.fillStyle = PANEL_BG;
+      ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.fillStyle = 'rgba(255,255,255,.22)';
+      ctx.font = '13px system-ui,sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(st.src === 'image' ? '拖入图片后显示点阵预览'
+                 : st.src === 'font'  ? '内置字库由 MCU 渲染，这里不预览'
+                 : '输入文字后显示点阵预览',
+                   cv.width/2, cv.height/2);
+      $('hexFrame').value = '';
+      $('hexRows').value = '';
+      $('frameInfo').textContent = '—';
+      $('rowInfo').textContent = '—';
+      $('sOn').textContent = '0';
+      $('sLen').textContent = '0';
+      $('sAll').textContent = '0';
+      $('sFrm').textContent = '—';
+      outFrame = null; outBlocked = ''; outDesc = '—';
+      refreshSendInfo();
+      return;
+    }
+
+    var scrolling = (st.src === 'text' && st.scroll);
+    frames = [];
+
+    if (scrolling){
+      var strip = getStrip();
+      var totalCells = strip.width / SUPER;
+      var n = Math.max(1, Math.ceil((totalCells - W) / st.step) + 1);
+      if (n > 400) n = 400;                  // 安全阀：字太长时别把浏览器卡死
+
+      for (var k = 0; k < n; k++){
+        frames.push(buildFrame(sampleGray(scrollWindow(k))));
+      }
+      curFrame = 0;
+      startAnim();
+    } else {
+      stopAnim();
+      frames.push(buildFrame(currentGray()));
+      curFrame = 0;
+    }
+
+    renderOutput(scrolling);
+    drawCurrent();
+    $('sFrm').textContent = (frames.length > 1)
+      ? (curFrame + 1) + '/' + frames.length
+      : '—';
+    refreshSendInfo();
+  }
+
+  function renderOutput(scrolling){
+    var f0 = frames[0];
+    var one = frame(f0.payload, f0.code);
+
+    // ---- 条带模式：只发一条宽图 + 宽高，MCU 自己滚 ----
+    if (scrolling && st.stripOut){
+      var sb = stripBitmap();
+      var payload, code, bpr;
+
+      if (!sb){
+        $('hexFrame').value = '';
+        outFrame = null; outBlocked = ''; outDesc = '—';
+        return;
+      }
+      if (sb.cols > 255){
+        $('hexFrame').value = '';
+        $('hexRows').value = '';
+        $('frameInfo').textContent = '条带 ' + sb.cols +
+          ' px 超过 255（帧头 [4] 只有 1 字节）—— 请减小字号或减少字数';
+        $('rowBlock').hidden = true;
+        $('sOn').textContent = frames[curFrame].on;
+        $('sLen').textContent = '—';
+        $('sAll').textContent = '—';
+        outFrame = null;
+        outBlocked = '条带 ' + sb.cols + ' px 超过 255，帧头装不下';
+        outDesc = '—';
+        return;
+      }
+
+      if (st.bpp === 1){
+        var bits = to1(sb.gray, sb.cols, H);
+        payload = encodeStrip1(bits, sb.cols);
+        code = 1;
+        bpr = bytesPerRow(sb.cols);
+      } else {
+        var vals = to8(sb.gray, sb.cols, H);
+        payload = new Uint8Array(vals);
+        code = 0;
+        bpr = sb.cols;
+      }
+
+      var fs = frameW(payload, code, sb.cols, true);
+
+      $('hexFrame').value = hex(fs);
+      $('frameInfo').textContent = '条带 ' + sb.cols + ' px · 负载 ' +
+        payload.length + ' B · 合计 ' + fs.length + ' B';
+
+      $('rowBlock').hidden = false;
+      var slines = [];
+      for (var yy = 0; yy < H; yy++){
+        slines.push('srow ' + (yy+1) + ' ' +
+                    hex(payload.subarray(yy*bpr, yy*bpr + bpr), ''));
+      }
+      $('hexRows').value = slines.join('\n');
+      $('rowInfo').textContent = H + ' 行 · 每行 ' + (bpr*2) + ' hex 字符' +
+        (bpr*2 > 120 ? '（超过 128 的行缓冲，需分段发）' : '');
+
+      $('sOn').textContent = frames[curFrame].on;
+      $('sLen').textContent = payload.length;
+      $('sAll').textContent = fs.length;
+
+      // ---- 发送信息：条带能不能发，由固件那三条限制决定 ----
+      outFrame = fs;
+      outBlocked = (st.bpp !== 1)
+        ? '8 bit 条带 ' + payload.length + ' B —— 固件单包收不下，请把位深改成 1 bit'
+        : (sb.cols > 120)
+          ? '条带 ' + sb.cols + ' px 超过 120 px 上限（帧头长度只有 1 字节）'
+          : '';
+      outDesc = '条带 ' + sb.cols + ' px · 整帧 ' + fs.length + ' B · 步进 ' +
+                Math.max(1, Math.min(8, Math.round(st.step || 1))) + ' / 50 ms';
+      return;
+    }
+
+    if (scrolling){
+      var lines = [];
+      for (var i = 0; i < frames.length; i++){
+        lines.push(hex(frame(frames[i].payload, frames[i].code)));
+      }
+      $('hexFrame').value = lines.join('\n');
+      $('frameInfo').textContent = frames.length + ' 帧 · 每帧 ' + one.length +
+        ' B · 合计 ' + (frames.length * one.length) + ' B';
+      $('rowBlock').hidden = true;
+
+      outFrame = null; outBlocked = '';
+      outDesc = '整帧 ' + one.length + ' B · 只发当前这一帧（定格）';
+    } else {
+      $('hexFrame').value = hex(one);
+      $('frameInfo').textContent = '头 6 B + 负载 ' + f0.payload.length + ' B = ' + one.length + ' B';
+      $('rowBlock').hidden = false;
+
+      var lines2 = [];
+      if (st.bpp === 8){
+        for (var r = 0; r < H; r++){
+          lines2.push('row ' + (r+1) + ' ' + hex(f0.payload.subarray(r*W, r*W + W), ''));
+        }
+      } else {
+        for (var r2 = 0; r2 < H; r2++){
+          lines2.push('row1 ' + (r2+1) + ' ' + hex(f0.payload.subarray(r2*2, r2*2 + 2), ''));
+        }
+      }
+      $('hexRows').value = lines2.join('\n');
+      $('rowInfo').textContent = H + ' 行 · ' + (st.bpp === 8 ? '每行 30 hex 字符' : '每行 4 hex 字符');
+
+      outFrame = one; outBlocked = '';
+      outDesc = '整帧 ' + one.length + ' B（' + (st.bpp === 1 ? '1 bit' : '8 bit') + '）';
+    }
+
+    $('sOn').textContent = frames[curFrame].on;
+    $('sLen').textContent = f0.payload.length;
+    $('sAll').textContent = frames.length * one.length;
+  }
+
+  // ---------- 事件 ----------
+  // 偏移只在「文字」和「手绘」下有效：
+  //   图片路径根本不读 ofx/ofy（sampleGray 只用 rot/fit）
+  //   文字开滚动时横向偏移由滚动本身承担，ofx 没意义（ofy 仍然有用）
+  function syncOffsetRows(){
+    var none = (st.src === 'image') || (st.src === 'font');   /* 图片/字库都不吃偏移 */
+    $('rowOfx').hidden = none || (st.src === 'text' && st.scroll);
+    $('rowOfy').hidden = none;
+  }
+
+  // 位深相关的控件显隐集中在这里，避免 setBpp / setSrc 各改一半
+  function syncBppRows(){
+    /* 内置字库那一栏不发位图，位深相关的一律不显示 */
+    var font = (st.src === 'font');
+    $('grp1').hidden  = font || (st.bpp !== 1);
+    /* 手绘 8bit 是"值即输出"，亮度/对比度/gamma 不起作用，藏起来免得误会 */
+    $('grp8').hidden  = font || (st.bpp !== 8) || (st.src === 'draw');
+    /* 1bit 下笔刷固定满亮，亮度滑块没有意义 */
+    $('rowPen').hidden = (st.bpp === 1);
+  }
+
+  function setBpp(n){
+    st.bpp = n;
+    Array.prototype.forEach.call($('bppSeg').children, function(b){
+      b.classList.toggle('on', +b.dataset.bpp === n);
+    });
+    syncBppRows();
+    $('tip').textContent = (n === 1)
+      ? '1 bit：每格只有亮/灭，32 字节负载，图标和像素画更清楚。'
+      : '8 bit：每格 256 级亮度，240 字节负载，适合照片和渐变。';
+    update();
+  }
+
+  $('bppSeg').addEventListener('click', function(e){
+    var b = e.target.closest('button');
+    if (b) setBpp(+b.dataset.bpp);
+  });
+
+  function setSrc(n){
+    st.src = n;
+    Array.prototype.forEach.call($('srcSeg').children, function(b){
+      b.classList.toggle('on', b.dataset.src === n);
+    });
+    $('grpImage').hidden = (n !== 'image');
+    $('grpText').hidden  = (n !== 'text');
+    $('grpDraw').hidden  = (n !== 'draw');
+    $('grpFont').hidden  = (n !== 'font');
+    $('rowBpp').hidden   = (n === 'font');    /* 字库那条路不发位图 */
+    $('tip').hidden      = (n === 'font');
+    $('rowFit').hidden   = (n !== 'image');   /* 文字画布和目标是同一比例，缩放无意义 */
+    /* 手绘是 1:1 的格子，旋转会让人对不上位置；反色画布上有自己的按钮。
+       内置字库的点阵在 MCU 里，这些也都用不上 */
+    $('rowRot').hidden   = (n === 'draw') || (n === 'font');
+    $('rowInv').hidden   = (n === 'draw') || (n === 'font');
+    syncBppRows();
+    syncOffsetRows();
+    syncFlashRow();
+
+    if (n === 'draw'){
+      if (!padSeeded){
+        /* 首次进来先导入一份现成内容 —— 给张白纸没人知道该从哪下手 */
+        padSeeded = true;
+        importIntoPad(st.img || textCanvas());
+      } else {
+        padRender();
+      }
+    }
+    update();
+  }
+
+  $('srcSeg').addEventListener('click', function(e){
+    var b = e.target.closest('button');
+    if (b) setSrc(b.dataset.src);
+  });
+
+  $('txt').addEventListener('input', function(e){ st.text = e.target.value; update(); });
+  $('fam').addEventListener('change', function(e){ st.fam = e.target.value; update(); });
+  $('bold').addEventListener('change', function(e){ st.bold = (+e.target.value === 1); update(); });
+  $('scr').addEventListener('change', function(e){
+    st.scroll = (+e.target.value === 1);
+    $('rowStep').hidden = !st.scroll;
+    $('rowOut').hidden  = !st.scroll;
+    syncOffsetRows();
+    syncFlashRow();
+    update();
+  });
+
+  $('out').addEventListener('change', function(e){
+    st.stripOut = (e.target.value === 'strip');
+    syncFlashRow();
+    update();
+  });
+
+  $('drop').addEventListener('click', function(){ $('file').click(); });
+
+  ['dragenter','dragover'].forEach(function(ev){
+    $('drop').addEventListener(ev, function(e){
+      e.preventDefault(); $('drop').classList.add('over');
+    });
+  });
+  ['dragleave','drop'].forEach(function(ev){
+    $('drop').addEventListener(ev, function(e){
+      e.preventDefault(); $('drop').classList.remove('over');
+    });
+  });
+  $('drop').addEventListener('drop', function(e){
+    var f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) loadFile(f);
+  });
+
+  $('file').addEventListener('change', function(e){
+    if (e.target.files[0]) loadFile(e.target.files[0]);
+  });
+
+  function loadFile(f){
+    var img = new Image();
+    img.onload = function(){
+      st.img = img;
+      $('drop').textContent = f.name + '  (' + img.width + '×' + img.height + ')';
+      if (st.src !== 'image') setSrc('image'); else update();
+    };
+    img.src = URL.createObjectURL(f);
+  }
+
+  $('rot').addEventListener('change', function(e){ st.rot = +e.target.value; update(); });
+  $('fit').addEventListener('change', function(e){ st.fit = e.target.value; update(); });
+  $('invert').addEventListener('change', function(e){ st.invert = +e.target.value; update(); });
+  $('dither').addEventListener('change', function(e){ st.dither = e.target.value; update(); });
+
+  function bindRange(id, key, fmt){
+    var el = $(id), lab = $(id === 'thr' ? 'thrV' : id + 'V');
+    el.addEventListener('input', function(){
+      st[key] = +el.value;
+      lab.textContent = fmt ? fmt(+el.value) : el.value;
+      if (st.src === 'draw') padRender();    /* 平移/笔刷亮度要立刻反映到画布 */
+      update();
+    });
+  }
+  bindRange('thr', 'thr');
+  bindRange('bri', 'bri');
+  bindRange('con', 'con');
+  bindRange('gam', 'gam', function(v){ return (v/100).toFixed(2); });
+  bindRange('pen', 'pen');
+
+  // ==================== 串口（Web Serial）====================
+  //
+  // 发送内容和"帧数据"里的 hex 完全一致：6 B 头 + 负载。
+  // 固件（vcmd.c）按首字节 0xA5 识别，解析后切到"单帧画面"场景显示。
+  var serPort = null, serWriter = null;
+
+  function serStatus(t){ $('serInfo').textContent = t; }
+
+  async function serDisconnect(){
+    try {
+      if (serWriter) { serWriter.releaseLock(); serWriter = null; }
+      if (serPort)   { await serPort.close(); serPort = null; }
+    } catch (e) { /* 端口已经拔了，忽略 */ }
+    $('serConn').textContent = '连接串口';
+    serStatus('未连接');
+  }
+
+  $('serConn').addEventListener('click', async function(){
+    if (serWriter) { await serDisconnect(); return; }
+
+    if (!('serial' in navigator)) {
+      serStatus('此浏览器不支持 Web Serial，请用 Chrome / Edge');
+      return;
+    }
+    try {
+      serPort = await navigator.serial.requestPort();
+      await serPort.open({ baudRate: 115200 });
+      serWriter = serPort.writable.getWriter();
+      $('serConn').textContent = '断开串口';
+      serStatus('已连接 115200');
+    } catch (e) {
+      serStatus('连接失败：' + e.message);
+      serPort = null; serWriter = null;
+    }
+  });
+
+  // 热插拔：设备被拔掉时把状态复位
+  if ('serial' in navigator) {
+    navigator.serial.addEventListener('disconnect', function(){
+      serWriter = null; serPort = null;
+      $('serConn').textContent = '连接串口';
+      serStatus('设备已断开');
+    });
+  }
+
+  // ==================== 发送文字（走单片机自己的字库）====================
+  //
+  // 不发位图。发三条文本命令，让 MCU 用它的 12×12 字库现场渲染：
+  //   mode 2      → 切到"文字滚动"场景（text / torient 只在这个场景生效）
+  //   torient 4   → 自动跟随重力判朝向；0~3 = 手动固定
+  //   text <UTF-8>
+  //
+  // 三条一次性写进去也没问题：vcmd 每帧只执行一条，剩下的留在 512 B 缓冲里，
+  // 顺序不会乱。
+  var TEXT_MAX_BYTES = 32;      // 和固件 scene_text.c 的 TEXT_MAX_BYTES 一致
+
+  function utf8Truncate(str, maxBytes){
+    var enc = new TextEncoder();
+    var out = '';
+    for (var ch of str) {                 // 按码点遍历，不会把汉字切成半个
+      if (enc.encode(out + ch).length > maxBytes) break;
+      out += ch;
+    }
+    return out;
+  }
+
+  function serTextInfoRefresh(){
+    var n = new TextEncoder().encode($('serText').value).length;
+    $('serTextInfo').textContent = n + ' / ' + TEXT_MAX_BYTES + ' 字节' +
+      (n > TEXT_MAX_BYTES ? '（发送时会截断）' : '');
+    refreshSendInfo();
+  }
+
+  $('serText').addEventListener('input', serTextInfoRefresh);
+  serTextInfoRefresh();
+
+  $('serAutoRot').addEventListener('change', function(){
+    $('serRot').disabled = $('serAutoRot').checked;
+  });
+
+  // ==================== 发送 ====================
+  // 四个来源共用：图片 / 文字 / 手绘 → 发整帧位图；内置字库 → 发文本命令。
+
+  function serFail(e){
+    serStatus('发送失败：' + e.message);
+    serWriter = null; serPort = null;
+    $('serConn').textContent = '连接串口';
+  }
+
+  async function sendFrame(){
+    if (outBlocked) { serStatus(outBlocked); return; }
+
+    var bytes = outFrame;
+    if (!bytes){
+      /* 滚动 + 逐帧：frames[] 里每一帧都是合法整帧，发当前这张（定格） */
+      var f = frames[curFrame];
+      if (!f) { serStatus('还没有画面'); return; }
+      bytes = frame(f.payload, f.code);
+    }
+
+    var strip = ((bytes[2] & 0x04) !== 0);
+    var kind  = ((bytes[2] & 0x03) === 1) ? '1bit' : '8bit';
+    var step  = Math.max(1, Math.min(8, Math.round(st.step || 1)));
+    var ms    = 50;                            /* 预览就是 50 ms/帧 */
+    var lev   = +$('serTLev').value || 255;
+
+    try {
+      /* 条带 + 勾了"存 Flash"：走三包，先擦写再播放，掉电保留 */
+      if (strip && ($('flashSave').value === '1')){
+        await sendStripToFlash(bytes, step, ms, lev);
+        serStatus('已存 Flash：条带 ' + bytes[4] + ' px，步进 ' + step +
+                  ' / ' + ms + ' ms —— 上电按键切到文字场景即可看到');
+        return;
+      }
+
+      if (strip){
+        /* 只进 RAM：先让 MCU 按预览的节奏滚（三条文本命令 + 条带帧一次写完，
+         * RX 环 512 B，总共不到 250 B） */
+        await serWriter.write(new TextEncoder().encode(
+          'mode 2\ntstep ' + step + '\ntms ' + ms + '\n'));
+      }
+      await serWriter.write(bytes);
+      serStatus('已发送 ' + bytes.length + ' B（' + kind + (strip ? ' 条带' : '') + '）');
+    } catch (e) { serFail(e); }
+  }
+
+  /* CRC16-CCITT（和固件 FlashStore_Crc16 一致：poly 0x1021，初值 0xFFFF） */
+  function crc16Update(crc, bytes){
+    for (var i = 0; i < bytes.length; i++){
+      crc ^= bytes[i] << 8;
+      for (var b = 0; b < 8; b++){
+        crc = (crc & 0x8000)
+          ? (((crc << 1) ^ 0x1021) & 0xFFFF)
+          : ((crc << 1) & 0xFFFF);
+      }
+    }
+    return crc & 0xFFFF;
+  }
+
+  function sleepMs(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+
+  /* 条带存 Flash —— 不做新格式：
+   * 条带就是一个 w = cols、h = 16 的"字形"，[w][h][bitmap] 的布局和 GLYPH 记录
+   * 完全一样。所以直接走现成的三包：
+   *   BEGIN(count=1, spacing=0, flags=loop, step, ms, lev)
+   *   GLYPH(idx=0, w=cols, h=16, len=ceil(cols/8)×16, bitmap)
+   *   END(crc16 over [w][h][bitmap])
+   * 固件收完校验 CRC → 擦写 Flash → 立刻播放。 */
+  async function sendStripToFlash(bytes, step, ms, lev){
+    var cols   = bytes[4];                     /* 帧头 [4] */
+    var bitmap = bytes.subarray(6);            /* 负载：行优先 1bpp，MSB = 最左 */
+    var wh = new Uint8Array([cols, 16]);
+
+    var crc = 0xFFFF;
+    crc = crc16Update(crc, wh);
+    crc = crc16Update(crc, bitmap);
+
+    await serWriter.write(new Uint8Array([
+      0xA5, 0x02, 1, 0, 0x01, 4, step, ms & 0xFF, (ms >> 8) & 0xFF, lev
+    ]));
+    await sleepMs(25);                         /* RX 环 512 B，分包之间留间隔 */
+
+    var pkt = new Uint8Array(6 + bitmap.length);
+    pkt[0] = 0xA5; pkt[1] = 0x03; pkt[2] = 0;  /* GLYPH */
+    pkt[3] = cols; pkt[4] = 16; pkt[5] = bitmap.length;
+    pkt.set(bitmap, 6);
+    await serWriter.write(pkt);
+    await sleepMs(25);
+
+    await serWriter.write(new Uint8Array([
+      0xA5, 0x04, 0, 0, 0, 2, crc & 0xFF, (crc >> 8) & 0xFF
+    ]));
+    await sleepMs(25);
+  }
+
+  async function sendText(){
+    var txt = utf8Truncate($('serText').value.trim(), TEXT_MAX_BYTES);
+    if (!txt) { serStatus('文字为空'); return; }
+
+    var auto = $('serAutoRot').checked;
+    var rot  = $('serRot').value;
+    /* 「跟随页面」= 用上面预览里的步进（st.step，单位格 = 像素/帧） */
+    var step = ($('serTStep').value === 'page')
+      ? Math.max(1, Math.min(8, Math.round(st.step || 1)))
+      : +$('serTStep').value;
+    var ms   = +$('serTMs').value;
+    var lev  = +$('serTLev').value;
+    var inv  = +$('serTInv').value;
+
+    // 顺序有讲究：先切场景，再设朝向/滚动/亮度，最后才换文字。
+    // vcmd 每帧只执行一条，所以这几行会在约 6 帧（≈130ms）内依次生效。
+    var head = 'mode 2\n' +
+               'torient ' + (auto ? '4' : rot) + '\n' +
+               'tstep '  + step + '\n' +
+               'tms '    + ms   + '\n' +
+               'tlev '   + lev  + '\n' +
+               'tinv '   + inv  + '\n' +
+               'text ';
+    var enc  = new TextEncoder();
+    var a = enc.encode(head), b = enc.encode(txt), nl = enc.encode('\n');
+    var buf = new Uint8Array(a.length + b.length + nl.length);
+
+    buf.set(a, 0);
+    buf.set(b, a.length);
+    buf.set(nl, a.length + b.length);
+
+    try {
+      await serWriter.write(buf);
+      serStatus('已发文字「' + txt + '」' + (auto ? '（自动朝向）' : '（朝向 ' + rot + '）'));
+      serTextInfoRefresh();
+    } catch (e) { serFail(e); }
+  }
+
+  // ==================== 文字预设（存板子 Flash）====================
+  //
+  // 板子侧是"只追加"：tpclr 清空 → 每组 text/tstep/tms/tlev/tinv/torient → tpadd。
+  // 板子没有回读命令，所以**这份本地列表才是权威**：发送 = 覆盖板子原有列表。
+  // 列表存 localStorage，刷新页面不丢。
+  var TP_KEY = 'led.tp.v1';
+
+  var presets = (function(){
+    try {
+      var a = JSON.parse(localStorage.getItem(TP_KEY) || '[]');
+      return Object.prototype.toString.call(a) === '[object Array]' ? a : [];
+    } catch (e) { return []; }
+  })();
+
+  function tpStore(){
+    try { localStorage.setItem(TP_KEY, JSON.stringify(presets)); } catch (e) {}
+  }
+
+  function tpEsc(s){
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /* 取"内置字库"那一栏当前的参数 —— 预设存的就是这套 */
+  function tpCurrent(){
+    var txt = utf8Truncate(($('serText').value || '').trim(), 32);
+    var step = ($('serTStep').value === 'page')
+      ? Math.max(1, Math.min(8, Math.round(st.step || 1)))
+      : +$('serTStep').value;
+    return {
+      t: txt,
+      step: step,
+      ms: +$('serTMs').value,
+      lev: +$('serTLev').value,
+      inv: +$('serTInv').value,
+      orient: $('serAutoRot').checked ? 4 : +$('serRot').value
+    };
+  }
+
+  function tpRender(){
+    var box = $('tpList');
+    if (!box) return;
+    if (!presets.length){
+      box.innerHTML = '<div class="tphint">还没有预设。填好文字和参数后点「存为预设」。</div>';
+    } else {
+      var h = '', i, p;
+      for (i = 0; i < presets.length; i++){
+        p = presets[i];
+        h += '<div class="tpitem"><span class="tpno">' + (i + 1) + '.</span>' +
+             '<span class="tptext">' + tpEsc(p.t) + '</span>' +
+             '<span class="tppar">' + p.step + 'px · ' + p.ms + 'ms · ' + p.lev +
+             (p.inv ? ' · 反色' : '') + ' · ' +
+             (p.orient === 4 ? '自动' : p.orient + '°') + '</span>' +
+             '<button data-tp="use" data-i="' + i + '">载入</button>' +
+             '<button data-tp="apply" data-i="' + i + '">应用</button>' +
+             '<button data-tp="del" data-i="' + i + '">删</button></div>';
+      }
+      box.innerHTML = h;
+    }
+    $('tpInfo').textContent = presets.length + ' 条（按 USER3 在板子上循环）';
+  }
+
+  function tpSavePreset(){
+    var cur = tpCurrent();
+    if (!cur.t) { serStatus('文字为空，先在上面填一句'); return; }
+    /* 同一句再存 = 更新它的参数，而不是又加一条重复的 —— 否则改了反色/亮度
+       再存一次，会出现两条一样的文字、参数不同，很容易发错。 */
+    for (var i = 0; i < presets.length; i++){
+      if (presets[i].t === cur.t){
+        presets[i] = cur;
+        tpStore(); tpRender();
+        serStatus('已更新第 ' + (i + 1) + ' 条的参数');
+        return;
+      }
+    }
+    presets.push(cur);
+    tpStore(); tpRender();
+    serStatus('已存为第 ' + presets.length + ' 条（点「发送到板子」才会写进板子）');
+  }
+
+  function tpUse(i){
+    var p = presets[i];
+    if (!p) return;
+    $('serText').value = p.t;
+    var stp = String(p.step);
+    $('serTStep').value = stp;
+    if ($('serTStep').value !== stp) $('serTStep').value = 'page';
+    $('serTMs').value = String(p.ms);
+    $('serTLev').value = String(p.lev);
+    $('serTInv').value = String(p.inv || 0);
+    if (p.orient === 4){
+      $('serAutoRot').checked = true;  $('serRot').disabled = true;
+    } else {
+      $('serAutoRot').checked = false; $('serRot').disabled = false;
+      $('serRot').value = String(p.orient);
+    }
+    serTextInfoRefresh();
+    serStatus('已载入第 ' + (i + 1) + ' 条到编辑框');
+  }
+
+  async function tpSendApply(i){
+    if (!serWriter) { serStatus('还没连接串口'); return; }
+    try {
+      await serWriter.write(new TextEncoder().encode('mode 2\ntpload ' + i + '\n'));
+      serStatus('已让板子切到第 ' + (i + 1) + ' 条');
+    } catch (e) { serFail(e); }
+  }
+
+  /* 字库这一栏的「发送到板子」走这里：把整份列表同步下去（= 覆盖板上预设）*/
+  async function tpSyncAll(){
+    if (!serWriter) { serStatus('还没连接串口'); return; }
+    if (!presets.length) {
+      serStatus('还没有预设：先填文字，点「存为预设」');
+      return;
+    }
+    var enc = new TextEncoder();
+    var i, p, cmd;
+    try {
+      serStatus('发送中 0/' + presets.length + ' …');
+      await serWriter.write(enc.encode('mode 2\n'));
+      await sleepMs(60);
+      await serWriter.write(enc.encode('tpclr\n'));
+      await sleepMs(150);                      /* 板子要擦 2 个扇区，留足时间 */
+      for (i = 0; i < presets.length; i++){
+        p = presets[i];
+        cmd = 'text ' + p.t.replace(/[\r\n]+/g, ' ') + '\n' +
+              'tstep ' + p.step + '\n' +
+              'tms ' + p.ms + '\n' +
+              'tlev ' + p.lev + '\n' +
+              'tinv ' + (p.inv ? 1 : 0) + '\n' +
+              'torient ' + p.orient + '\n';
+        await serWriter.write(enc.encode(cmd));
+        await sleepMs(80);
+        await serWriter.write(enc.encode('tpadd\n'));
+        await sleepMs(80);
+        serStatus('发送中 ' + (i + 1) + '/' + presets.length + ' …');
+      }
+      var curT = tpCurrent().t;
+      var inList = false;
+      for (i = 0; i < presets.length; i++){
+        if (presets[i].t === curT) { inList = true; break; }
+      }
+      serStatus('已发送 ' + presets.length + ' 条；按 USER3 循环' +
+                ((!curT || inList) ? ''
+                  : '（⚠ 编辑框里「' + curT + '」不在列表里，没发出去）'));
+    } catch (e) { serFail(e); }
+  }
+
+  $('tpSaveBtn').addEventListener('click', tpSavePreset);
+  $('tpList').addEventListener('click', function(e){
+    var b = e.target.closest ? e.target.closest('button') : null;
+    if (!b || !b.dataset.tp) return;
+    var i = +b.dataset.i;
+    if (b.dataset.tp === 'del'){ presets.splice(i, 1); tpStore(); tpRender(); }
+    else if (b.dataset.tp === 'use'){ tpUse(i); }
+    else if (b.dataset.tp === 'apply'){ tpSendApply(i); }
+  });
+  tpRender();  
+  // ==================== 图片/动图槽上传（阶段 3）====================
+  //
+  // 板子侧协议（见 多资源与两级按键方案.md §3.1）：
+  //   BEGIN A5|5|slot|frames.lo|frames.hi|4| bpp, fps.lo, fps.hi, gain
+  //   DATA  A5|6|seq |0|0|len| 帧数据（len 必须是 8 的倍数：240 或 120）
+  //   END   A5|7|0|0|0|2| crc.lo, crc.hi      ← crc 覆盖全部帧数据
+  //
+  // 板子收一包要写 flash（偶尔还要擦 1 KB 扇区 ≈ 20 ms），RX 环只有 512 B，
+  // 所以每包之间必须留间隔；45 ms 是留了余量的值。
+  var IMG_FPS_X10 = 200;                 /* 20 fps */
+
+  function imgStatus(t){ $('imgInfo').textContent = t; }
+
+  /* 一帧负载统一展开成 240 B 8bit（支持 240 B 8bit 与 32 B 1bit 两种输入）*/
+  function imgTo8(payload){
+    if (payload.length === 240) return payload;
+    if (payload.length === 32){
+      var p = new Uint8Array(240), r, c, b, bit;
+      for (r = 0; r < 16; r++){
+        for (c = 0; c < 15; c++){
+          b   = payload[r * 2 + (c >> 3)];
+          bit = (b >> (7 - (c & 7))) & 1;
+          p[r * 15 + c] = bit ? 255 : 0;
+        }
+      }
+      return p;
+    }
+    return null;
+  }
+
+  /* 240 B 8bit → 120 B 4bit（字节 j 高 4 位 = 像素 2j，低 4 位 = 像素 2j+1）*/
+  function imgPack(p8, wantBpp){
+    if (wantBpp === 8) return p8;
+    var out = new Uint8Array(120), i;
+    for (i = 0; i < 120; i++){
+      out[i] = ((p8[i * 2] & 0xF0) | (p8[i * 2 + 1] >> 4));
+    }
+    return out;
+  }
+
+  /* 收集要上传的帧：文字"逐帧"模式有多帧（整条滚动），其余来源是一张静图 */
+  function imgCollect(){
+    if (($('out').value === 'frames') && frames.length > 1){
+      return { frames: frames.map(function(f){ return f.payload; }) };
+    }
+    if (outFrame && outFrame.length > 6){
+      return { frames: [outFrame.subarray(6)] };
+    }
+    return null;
+  }
+
+  async function imgUpload(){
+    if (!serWriter) { imgStatus('还没连接串口'); return; }
+
+    var col = imgCollect();
+    if (!col) { imgStatus('没有画面可上传'); return; }
+
+    var slot     = +$('imgSlot').value;
+    var wantBpp  = (+$('imgBpp').value === 8) ? 8 : 4;
+    var perFrame = (wantBpp === 8) ? 240 : 120;
+    var cap      = (slot === 0 ? 15 : 7) * 1024;
+
+    var packed = [], i, p8, f;
+    for (i = 0; i < col.frames.length; i++){
+      p8 = imgTo8(col.frames[i]);
+      if (!p8){
+        imgStatus('第 ' + (i + 1) + ' 帧格式不认识（' + col.frames[i].length + ' B）');
+        return;
+      }
+      packed.push(imgPack(p8, wantBpp));
+    }
+
+    if (packed.length * perFrame > cap){
+      imgStatus('放不下：' + packed.length + ' 帧 × ' + perFrame + ' B = ' +
+                (packed.length * perFrame) + ' B > ' + cap + ' B（换 4bit 或减帧数）');
+      return;
+    }
+
+    var begin = new Uint8Array(10);
+    begin[0] = 0xA5; begin[1] = 0x05; begin[2] = slot;
+    begin[3] = packed.length & 0xFF;
+    begin[4] = (packed.length >> 8) & 0xFF;
+    begin[5] = 4;
+    begin[6] = (wantBpp === 8) ? 0 : 1;
+    begin[7] = IMG_FPS_X10 & 0xFF;
+    begin[8] = (IMG_FPS_X10 >> 8) & 0xFF;
+    begin[9] = 255;                      /* gain = 100% */
+
+    var crc = 0xFFFF;
+    var pkt;
+
+    try {
+      imgStatus('上传中 0/' + packed.length + ' …');
+      await serWriter.write(begin);
+      await sleepMs(150);                /* 板子要擦头扇区 */
+      for (i = 0; i < packed.length; i++){
+        f = packed[i];
+        pkt = new Uint8Array(6 + f.length);
+        pkt[0] = 0xA5; pkt[1] = 0x06; pkt[2] = i & 0xFF;
+        pkt[3] = 0; pkt[4] = 0; pkt[5] = f.length;
+        pkt.set(f, 6);
+        await serWriter.write(pkt);
+        crc = crc16Update(crc, f);
+        await sleepMs(45);
+        imgStatus('上传中 ' + (i + 1) + '/' + packed.length + ' …');
+      }
+      await serWriter.write(new Uint8Array([
+        0xA5, 0x07, 0, 0, 0, 2, crc & 0xFF, (crc >> 8) & 0xFF
+      ]));
+      await sleepMs(80);
+      imgStatus('已存入槽 ' + slot + '：' + packed.length + ' 帧 · ' +
+                (wantBpp === 8 ? '8bit' : '4bit') + ' —— 按 USER3 在「图像」大类里切到它');
+    } catch (e) { serFail(e); }
+  }
+
+  $('imgUp').addEventListener('click', imgUpload);
+  async function sendCurrent(){
+    if (!serWriter) { serStatus('还没连接串口'); return; }
+    if (st.src === 'font') {
+      if ($('flashSave').value === '1') { await tpSyncAll(); } else { await sendText(); }
+      return;
+    }
+    await sendFrame();
+  }
+
+  $('serSend').addEventListener('click', sendCurrent);       /* 预览下方 */
+
+  /* 预览下方：将要发出去的是什么 */
+  function refreshSendInfo(){
+    var el = $('sndInfo');
+    if (!el) return;
+
+    if (st.src === 'font'){
+      var save = ($('flashSave').value === '1');
+      el.textContent = save
+        ? ('发送全部预设 · ' + presets.length + ' 条（存 Flash，掉电保留）')
+        : ('只发当前文字 · 掉电丢（要保留就把「存 Flash」选成「是」）');
+      return;
+    }
+
+    var t = outBlocked ? ('⚠ ' + outBlocked) : outDesc;
+    if (!outBlocked && st.src === 'text' && st.scroll && st.stripOut &&
+        ($('flashSave').value === '1')) t += ' · 存 Flash（掉电保留）';
+    el.textContent = t;
+  }
+
+  function flashSupported(){
+    /* 字库这一栏也能"存 Flash"：存 = 把整份预设列表写进板子；
+       不存 = 只发当前这条文本命令，掉电就没了。 */
+    if (st.src === 'font') {
+      return true;
+    }
+    return (st.src === 'text') && st.scroll && st.stripOut;
+  }
+
+  /* 「存 Flash」四个来源共用同一行：能力不够时置灰 + 写明原因。
+     这一行只负责两种存法：
+       · 文字 + 滚动 + 条带输出 → ver2/3/4 三包存进 glyph 区
+       · 内置字库               → 整份预设列表写进 Flash
+     图片 / 手绘走的是另一条路：下方「存到槽位」（ver5/6/7 多帧 + CRC），
+     所以这里置灰并指向那一行，不是"不支持"。 */
+  function syncFlashRow(){
+    var ok = flashSupported();
+    $('flashSave').disabled = !ok;
+
+    var why;
+    if (st.src === 'font'){
+      why = ($('flashSave').value === '1')
+        ? '（整份预设列表写进板子 Flash，掉电保留）'
+        : '（只发文本命令，掉电就没了）';
+    } else if (ok){
+      why = '（条带存进 Flash，上电自动恢复）';
+    } else if (st.src === 'image'){
+      why = '图片请用下方「存到槽位」，这一行只管条带和字库';
+    } else if (st.src === 'draw'){
+      why = '手绘请用下方「存到槽位」，这一行只管条带和字库';
+    } else if (st.src === 'font'){
+      why = '内置字库走文本命令，不需要存 Flash';
+    } else {
+      why = '仅「文字 + 滚动开 + 输出=条带」可以存 Flash';
+    }
+    $('flashWhy').textContent = why;
+    /* 图片/动图槽只对"能出位图"的来源有意义 */
+    $('rowImgSlot').hidden = (st.src === 'font');
+
+    refreshSendInfo();
+  }
+  $('flashSave').addEventListener('change', syncFlashRow);
+
+  document.querySelectorAll('[data-copy]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var ta = $(btn.dataset.copy);
+      ta.select();
+      var done = function(){
+        var old = btn.textContent;
+        btn.textContent = '已复制';
+        setTimeout(function(){ btn.textContent = old; }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(ta.value).then(done, function(){
+          document.execCommand('copy'); done();
+        });
+      } else {
+        document.execCommand('copy'); done();
+      }
+    });
+  });
+
+  $('dl').addEventListener('click', function(){
+    var s = 4;
+    var c = document.createElement('canvas');
+    c.width = W*CELL*s; c.height = H*CELL*s;
+    var x = c.getContext('2d');
+    x.imageSmoothingEnabled = false;
+    x.drawImage(cv, 0, 0, c.width, c.height);
+    var a = document.createElement('a');
+    a.download = 'led15x16_' + st.bpp + 'bit.png';
+    a.href = c.toDataURL('image/png');
+    a.click();
+  });
+
+  // 绑定字号/偏移（单位都是"格"）
+  bindRange('fsz', 'cells');
+  bindRange('spc', 'space');
+  bindRange('ofx', 'ofx');
+  bindRange('ofy', 'ofy');
+  bindRange('stp', 'step');
+
+  // 初始：文字模式，先渲染一句示例
+  setBpp(1);
+  setSrc('text');
+})();
+</script>
+</body>
+</html>

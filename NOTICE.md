@@ -9,13 +9,16 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文件 | `hardware/wqy12_common.h` |
+| 文件 | `hardware/wqy12_common.h`<br>`pc/font/wqy12_common.bin`<br>`pc/font/wqy12_gb2312.bin`<br>`pc/font/wqy12_index.txt` |
 | 来源 | 文泉驿点阵宋体（WenQuanYi Bitmap Song） |
 | 许可证 | **GNU GPL v2 + 字体嵌入例外（Font Embedding Exception）** |
 
-该文件中的点阵数据由上述字库经 `build_font.py` 生成，属于**衍生作品**，
+上述文件中的点阵数据均由该字库经 `pc/font/tools/` 的脚本生成，属于**衍生作品**，
 因此这部分数据遵循 GPL v2，而不是 MIT。GPL v2 全文见
 <https://www.gnu.org/licenses/old-licenses/gpl-2.0.html>。
+
+⚠ 原始 BDF 字库（`wenquanyi_10pt.bdf`，约 4.4 MB）**未包含在本仓库中**，
+需要重建字库时请自行从文泉驿官网下载，放到 `pc/font/_src/` 下。
 
 若你需要一个纯 MIT 的版本，把该文件替换成自己设计或来自 OFL 授权字体的点阵即可，
 其余代码不受影响。

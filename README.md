@@ -1,5 +1,3 @@
-an'jian
-
 # MSPM0G3507 流体模拟
 
 在 LP-MSPM0G3507 上运行的**实时二维流体模拟**。
@@ -17,6 +15,19 @@ an'jian
 | 算法             | FLIP/PIC 混合流体 + MAC 网格压力投影（Q24 定点 + MATHACL 硬件除法）              |
 | 单帧耗时         | 物理 ≈20.3 ms + 推屏 ≈1.2 ms ≈ **21.5 ms/帧**                            |
 | 实测占用         | Flash **22.4 KB** / 128 KB，SRAM **22.3 KB** / 32 KB                     |
+
+## 上位机
+
+`pc/index.html` 是一个**零依赖的单文件网页**：图片 / 文字 / 手绘 → 15×16 帧数据，
+再通过 Web Serial 直接推到板子。双击就能用，不用装任何东西，也不需要联网。
+
+![上位机界面](docs/pc.png)
+
+四个来源里，图片 / 文字 / 手绘发的是**整帧位图**；「内置字库」只发一条
+`text 你好世界` 这样的文本命令，字形由 MCU 自己的 12×12 字库现场渲染
+——所以它能跟着重力转 90°/180°。
+
+用法和已知限制见 [pc/README.md](pc/README.md)。
 
 ## 显示布局
 
@@ -773,7 +784,6 @@ mask 16384         # bit14 = rawz_mg（默认检测轴）
 | `hardware/fluid_iqmath.h`               | Q24 定点数学库                                                  |
 | `hardware/fluid_demo.c` / `.h`        | 胶水层：IMU 重力 + 摇晃 → 算法 → LED 点阵（IMU 不可用时退回假重力） |
 | `hardware/clock.c` / `.h`             | `tick_ms` 1 ms 节拍、SysTick 初始化                           |
-| `hardware/IMU660RB/`                    | 逐飞 LSM6DSR 驱动 + Fusion 姿态库。**本工程不引用**（板子是 LSM6DS3TR-C），只是留在仓库里没删 |
 | `hardware/lsm6ds3trc.c` / `.h`        | LSM6DS3TR-C（WHO_AM_I=0x6A）最简 SPI 驱动，读六轴 + 温度      |
 | `hardware/battery.c` / `.h`           | 电池采样（ADC0/PA27）+ 运行期低电保护（熄屏安静窗口 → 连续 3 次低电关机）|
 | `hardware/debug.c` / `.h`             | 观测量结构体 `dbg` + 时间打点/窗口统计 + HardFault 现场捕获    |
@@ -788,6 +798,9 @@ mask 16384         # bit14 = rawz_mg（默认检测轴）
 | `hardware/scene_still.c`              | **场景 1：静态图**（px / fill / ramp，亮度标定用）|
 | `hardware/scene_text.c`               | **场景 2：文字滚动**（点阵字库 → 条带 → 横向滚动）|
 | `hardware/wqy12_common.h`             | 12×12 中文点阵字库（599 字，19.6 KB Flash）|
+| `pc/index.html`                       | **上位机**：零依赖单文件网页，图片/文字/手绘 → 帧数据 + Web Serial |
+| `pc/font/`                            | 字库工具链：BDF → 点阵 .bin / .h 的生成与裁剪脚本 |
+| `docs/`                               | README 用图 |
 | `hardware/brake.c` / `.h`             | **刹车高亮**：加速度计判定 + 全屏满亮 + 可替换显示接口 |
 | `hardware/vcmd.c` / `.h`              | **串口下行命令**：RX DMA + 文本解析 → 命令邮箱 |
 | `hardware/vofa.c` / `.h`              | **串口上行遥测**：FireWater 帧 + TX DMA（忙就丢帧）|
@@ -1054,5 +1067,5 @@ PB12 PB13 PB21 PB22 PB23 PB25 PB26 PB27
     顺带抑制“快速平移被误判成倾斜”
   - **涡旋注入**：拿绕屏幕法线的角速度给流体加切向速度，
     做成“转手腕液体打旋”的效果
-- `hardware/IMU660RB/`（LSM6DSR + Fusion 姿态库）**本工程完全不引用**，
-  只是留着当参考；想瘦身可以删掉，但要同步清 `Debug/` 下的构建列表。
+- `hardware/IMU660RB/`（LSM6DSR + Fusion 姿态库）曾作为参考留在仓库里，
+  但它从未被 include、也未链接进固件，公开前已经移除。
