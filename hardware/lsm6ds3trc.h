@@ -7,7 +7,7 @@
  *   SCLK = PA17   PICO/MOSI = PA18   POCI/MISO = PA16   CS = PA15（GPIO 手动控制）
  *   Mode0(POL0/PHA0)、8bit、MSB first、8MHz（= 80MHz / ((1+4)*2)）
  *
- * ⚠ 别和已有的 hardware/IMU660RB/ 搞混：那套驱动是针对 LSM6DSR 的
+ * ⚠ 别和逐飞 IMU660RB 模块上那颗 LSM6DSR 搞混
  *   （WHO_AM_I(0x0F) = 0x6B），本芯片是 0x6A。两者基础寄存器地址大体相同，
  *   但**陀螺量程（CTRL2_G 的 FS_G 字段）编码不一样**，混用会按错量程换算。
  *

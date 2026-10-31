@@ -41,3 +41,11 @@ test_results/
 *.bak-*
 *.orig
 README.html
+
+# ---------- 构建产物补充 ----------
+# firmware.hex 每次编译都会重新生成，内容随代码变，提交进来只会误导别人
+Debug/*.hex
+
+# ---------- 语言服务器自动生成的配置 ----------
+# .clangd 文件头自己写着 "do not add it to source-control"
+.clangd

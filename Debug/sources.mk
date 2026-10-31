@@ -119,7 +119,5 @@ GEN_OPTS__QUOTED :=
 # Every subdirectory with source files must be described here
 SUBDIRS := \
 . \
-hardware/IMU660RB/Fusion \
-hardware/IMU660RB \
 hardware \
 
