@@ -17,6 +17,8 @@
 | 实测占用         | Flash **22.4 KB** / 128 KB，SRAM **22.3 KB** / 32 KB                     |
 
 
+![流体模拟：倾斜板子时液体流向低位](docs/images/fluid-demo.jpg)
+
 ## 文档导航
 
 | 文档 | 内容 |
@@ -265,6 +267,8 @@ OLED 已删除，所有观测量都走 `hardware/debug.h` 的全局 `dbg` 结构
 > 就能用（外设侧的中断使能 `SYSCFG_DL_init()` 里已经做好了）。
 > TIMER_0 的 NVIC 是**打开**的，它跑 5 ms 按键节拍。
 
+
+![3D 打印外壳（Fusion 360 建模）](docs/images/enclosure-cad.jpg)
 
 ## 目录结构
 
